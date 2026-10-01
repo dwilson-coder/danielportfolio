@@ -27,4 +27,4 @@ database.prepare('INSERT INTO creator_profiles (user_id, display_name, location,
 
 console.log(`Creator account: ${email}`)
 console.log(requestedPassword ? 'Development demo password configured.' : `One-time generated password: ${password}`)
-console.log('Save this password securely. You must set up an authenticator on first sign-in.')
+console.log('Save this password securely. Email two-factor verification is required on first sign-in.')

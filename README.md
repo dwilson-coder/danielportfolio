@@ -20,7 +20,7 @@ npm install
 npm run dev
 ```
 
-The local demo credentials are `admin@example.com` / `REDACTED`. They are for development only. On first sign-in at `http://localhost:5173/admin`, scan the authenticator QR code and verify a current code; this completes setup and opens the admin dashboard. New accounts cannot be created in the browser. Production owner accounts should be created with `npm run create-user -- owner@example.com`, which generates a random password. The **Forgot your password?** flow requires the private recovery code from `.env`; no password-reset email service is configured.
+On an empty local development database, `npm run dev` seeds the demo admin: `admin@example.com` / `REDACTED`. These credentials are development-only and are not created in production. Sign in at `http://localhost:5173/admin`; a six-digit 2FA code is sent to `TWO_FACTOR_EMAIL` after SMTP is configured. New accounts cannot be created in the browser. Create the production owner with `npm run create-user -- owner@example.com`; it generates a random password. The **Forgot your password?** flow requires the private recovery code from `.env`; no password-reset email service is configured.
 
 Vite serves the site on port `5173` and proxies `/api` to the Express API on port `3001`.
 
@@ -33,15 +33,15 @@ Vite serves the site on port `5173` and proxies `/api` to the Express API on por
 
 ## Security and storage
 
-- Passwords use Node scrypt with per-user salts. Authenticator secrets are encrypted at rest.
+- Passwords use Node scrypt with per-user salts. Email 2FA codes are HMAC-hashed at rest, expire after 10 minutes, and allow at most five attempts.
 - Sessions use random database-backed tokens in `HttpOnly`, `SameSite=Strict` cookies. Mutating requests require CSRF tokens; login, recovery, and uploads are rate-limited.
 - Video and thumbnail files are inspected by file signature, not just filename or browser MIME type. Profile images are limited to JPEG, PNG, and WebP, up to 5 MB.
-- Production requires a 32-character-or-longer `SESSION_SECRET` and `PORTAL_RECOVERY_CODE`. Serve the app behind HTTPS; production session cookies use `Secure`. Explicit demo passwords are refused when `NODE_ENV=production`.
+- Production requires a 32-character-or-longer `SESSION_SECRET` and `PORTAL_RECOVERY_CODE`, plus `TWO_FACTOR_EMAIL` and working `SMTP_HOST`, `SMTP_USER`, and `SMTP_PASSWORD` settings. Serve the app behind HTTPS; production session cookies use `Secure`. Explicit demo passwords are refused when `NODE_ENV=production`.
 - SQLite and media are stored in `server/data/` and `server/uploads/`, both ignored by git. Back up both locations. The SQLite driver is Node's built-in `node:sqlite` module and currently emits an experimental-feature warning.
 
 ## Production
 
-Configure `.env` with your public site URL, social profile URLs, long random secrets, and persistent storage paths. Then build and run the combined API/site server:
+Configure `.env` with your public site URL, social profile URLs, long random secrets, SMTP sender credentials, `TWO_FACTOR_EMAIL`, and persistent storage paths. Then build and run the combined API/site server:
 
 ```sh
 npm run build

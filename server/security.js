@@ -1,8 +1,7 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomInt, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { promisify } from 'node:util'
-import speakeasy from 'speakeasy'
 
 const scrypt = promisify(scryptCallback)
 const developmentSecretPath = resolve('server/data/.dev-secret')
@@ -13,6 +12,18 @@ if (process.env.NODE_ENV === 'production' && (process.env.SESSION_SECRET || '').
 if (process.env.NODE_ENV === 'production' && (process.env.PORTAL_RECOVERY_CODE || '').length < 32) {
   throw new Error('PORTAL_RECOVERY_CODE must contain at least 32 characters in production.')
 }
+if (process.env.NODE_ENV === 'production' && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(process.env.TWO_FACTOR_EMAIL || '') || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD)) {
+  throw new Error('TWO_FACTOR_EMAIL and SMTP_HOST, SMTP_USER, and SMTP_PASSWORD must be configured for email 2FA in production.')
+}
+if (process.env.NODE_ENV === 'production' && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(process.env.TWO_FACTOR_EMAIL || '') || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD)) {
+  throw new Error('TWO_FACTOR_EMAIL and SMTP_HOST, SMTP_USER, and SMTP_PASSWORD must be configured for email 2FA in production.')
+}
+if (process.env.NODE_ENV === 'production' && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(process.env.TWO_FACTOR_EMAIL || '') || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD)) {
+  throw new Error('TWO_FACTOR_EMAIL and SMTP_HOST, SMTP_USER, and SMTP_PASSWORD must be configured for email 2FA in production.')
+}
+if (process.env.NODE_ENV === 'production' && (!process.env.TWO_FACTOR_EMAIL || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD)) {
+  throw new Error('TWO_FACTOR_EMAIL and SMTP_HOST, SMTP_USER, and SMTP_PASSWORD must be configured in production.')
+}
 
 if (!process.env.SESSION_SECRET && process.env.NODE_ENV !== 'production') {
   mkdirSync(dirname(developmentSecretPath), { recursive: true })
@@ -22,7 +33,6 @@ if (!process.env.SESSION_SECRET && process.env.NODE_ENV !== 'production') {
 }
 
 export const sessionSecret = process.env.SESSION_SECRET || readFileSync(developmentSecretPath, 'utf8').trim()
-const encryptionKey = createHash('sha256').update(sessionSecret).digest()
 
 export function hashToken(token) {
   return createHash('sha256').update(token).digest('hex')
@@ -40,20 +50,6 @@ export async function verifyPassword(password, salt, storedHash) {
   return expected.length === actual.length && timingSafeEqual(expected, actual)
 }
 
-export function encryptSecret(secret) {
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', encryptionKey, iv)
-  const ciphertext = Buffer.concat([cipher.update(secret, 'utf8'), cipher.final()])
-  return `${iv.toString('hex')}:${cipher.getAuthTag().toString('hex')}:${ciphertext.toString('hex')}`
-}
-
-export function decryptSecret(value) {
-  const [ivHex, tagHex, ciphertextHex] = value.split(':')
-  const decipher = createDecipheriv('aes-256-gcm', encryptionKey, Buffer.from(ivHex, 'hex'))
-  decipher.setAuthTag(Buffer.from(tagHex, 'hex'))
-  return Buffer.concat([decipher.update(Buffer.from(ciphertextHex, 'hex')), decipher.final()]).toString('utf8')
-}
-
 export function constantTimeMatch(actual, expected) {
   if (typeof actual !== 'string' || typeof expected !== 'string') return false
   const actualBuffer = Buffer.from(actual)
@@ -61,10 +57,14 @@ export function constantTimeMatch(actual, expected) {
   return actualBuffer.length === expectedBuffer.length && timingSafeEqual(actualBuffer, expectedBuffer)
 }
 
-export function createTotpSetup(email) {
-  return speakeasy.generateSecret({ name: `${email} - Frame by Frame`, issuer: 'Frame by Frame', length: 20 })
+export function createEmailOtp(userId) {
+  const code = String(randomInt(0, 1_000_000)).padStart(6, '0')
+  const hash = createHmac('sha256', sessionSecret).update(`${userId}:${code}`).digest('hex')
+  return { code, hash }
 }
 
-export function verifyTotp(secret, token) {
-  return /^\d{6}$/.test(token) && speakeasy.totp.verify({ secret, encoding: 'base32', token, window: 1 })
+export function verifyEmailOtp(userId, code, storedHash) {
+  if (!/^\d{6}$/.test(code) || typeof storedHash !== 'string') return false
+  const hash = createHmac('sha256', sessionSecret).update(`${userId}:${code}`).digest('hex')
+  return constantTimeMatch(hash, storedHash)
 }

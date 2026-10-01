@@ -80,7 +80,12 @@ function formatDuration(seconds) {
 function AuthForm({ busy, error, notice, onForgot, onSubmit }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  function useDemoCredentials() {
+    setEmail('admin@example.com')
+    setPassword('REDACTED')
+  }
   return <form className="portal-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ email, password }) }}>
+    {import.meta.env.DEV && <aside className="demo-credentials"><div><span>LOCAL DEMO SIGN-IN</span><strong>admin@example.com</strong><strong>REDACTED</strong></div><button type="button" onClick={useDemoCredentials}>Fill demo credentials</button></aside>}
     <label>Email address<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required /></label>
     <label>Password<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} maxLength={256} required /></label>
     {error && <p className="portal-error" role="alert">{error}</p>}
@@ -105,7 +110,7 @@ function RecoveryForm({ busy, error, notice, onBack, onSubmit }) {
   </form>
 }
 
-function CodeForm({ code, setCode, busy, error, onSubmit, label = 'Authenticator code' }) {
+function CodeForm({ code, setCode, busy, error, onSubmit, label = 'Email verification code' }) {
   return <form className="portal-form" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
     <label>{label}<input className="totp-input" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" required /></label>
     {error && <p className="portal-error" role="alert">{error}</p>}
@@ -171,7 +176,7 @@ function PortalPage() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [code, setCode] = useState('')
-  const [setup, setSetup] = useState(null)
+  const [emailCodeSent, setEmailCodeSent] = useState(false)
   const [videos, setVideos] = useState([])
   const [profile, setProfile] = useState({ displayName: 'Daniel Wilson', location: 'Pittsburgh, PA', bio: '', tags: ['Filmmaking', 'Motion design', 'Editing'], imageUrl: '/ninja.svg' })
   const [thumbnailLibrary, setThumbnailLibrary] = useState([])
@@ -199,6 +204,9 @@ function PortalPage() {
           setVideos(videoResult.videos)
           setProfile(profileResult)
           setThumbnailLibrary(thumbnailResult.thumbnails)
+        } else if (['setup_required', 'two_factor_pending'].includes(current.state)) {
+          setSession(current)
+          await sendEmailCode(current)
         }
         setSession(current)
       })
@@ -211,6 +219,22 @@ function PortalPage() {
 
   useEffect(() => () => { if (previewRef.current) URL.revokeObjectURL(previewRef.current) }, [])
 
+  async function sendEmailCode(currentSession = session) {
+    if (!currentSession) return
+    setError('')
+    setBusy(true)
+    try {
+      const result = await api('/auth/email-code/send', { method: 'POST', csrfToken: currentSession.csrfToken })
+      setEmailCodeSent(true)
+      setNotice(result.message)
+    } catch (requestError) {
+      setEmailCodeSent(false)
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   async function submitCredentials(credentials) {
     setError('')
     setBusy(true)
@@ -218,11 +242,14 @@ function PortalPage() {
       const result = await api('/auth/login', { method: 'POST', data: credentials })
       setSession(result)
       setCode('')
+      setEmailCodeSent(false)
       if (result.state === 'authenticated') {
         const [videoResult, profileResult, thumbnailResult] = await Promise.all([api('/videos'), api('/profile'), api('/videos/thumbnails')])
         setVideos(videoResult.videos)
         setProfile(profileResult)
         setThumbnailLibrary(thumbnailResult.thumbnails)
+      } else {
+        await sendEmailCode(result)
       }
     } catch (requestError) {
       setError(requestError.message)
@@ -246,27 +273,14 @@ function PortalPage() {
     }
   }
 
-  async function beginTotpSetup() {
-    setError('')
-    setBusy(true)
-    try {
-      setSetup(await api('/auth/totp/setup', { method: 'POST', csrfToken: session.csrfToken }))
-    } catch (requestError) {
-      setError(requestError.message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
   async function verifyCode() {
     setError('')
     setBusy(true)
     try {
-      const endpoint = session.state === 'setup_required' ? '/auth/totp/setup/verify' : '/auth/totp/verify'
-      const result = await api(endpoint, { method: 'POST', data: { code }, csrfToken: session.csrfToken })
+      const result = await api('/auth/email-code/verify', { method: 'POST', data: { code }, csrfToken: session.csrfToken })
       const [videoResult, profileResult, thumbnailResult] = await Promise.all([api('/videos'), api('/profile'), api('/videos/thumbnails')])
       setSession(result)
-      setSetup(null)
+      setEmailCodeSent(false)
       setCode('')
       setVideos(videoResult.videos)
       setProfile(profileResult)
@@ -284,7 +298,7 @@ function PortalPage() {
     setAuthView('login')
     setVideos([])
     setThumbnailLibrary([])
-    setSetup(null)
+    setEmailCodeSent(false)
     setError('')
   }
 
@@ -375,11 +389,9 @@ function PortalPage() {
   return <main className="portal-page">
     <div className="portal-heading"><div><p className="portal-kicker"><span /> CREATOR STUDIO</p><h1>{session?.state === 'authenticated' ? 'Creator dashboard.' : 'Your work, in motion.'}</h1><p>{session?.state === 'authenticated' ? `Signed in as ${session.email}` : 'Sign in to manage your films and motion work.'}</p></div>{session?.state === 'authenticated' && <button className="portal-quiet-button" type="button" onClick={signOut}><LogOut size={16} /> Sign out</button>}</div>
 
-    {!session && <section className="portal-auth"><div className="portal-auth-mark"><KeyRound size={20} /><span>PRIVATE CREATOR ACCESS</span></div><h2>{authView === 'forgot' ? 'Reset your password.' : 'Welcome back.'}</h2><p className="portal-lede">{authView === 'forgot' ? 'Verify with the site recovery code to set a new password.' : 'Sign in with your email and password, then verify with your authenticator.'}</p>{authView === 'forgot' ? <RecoveryForm busy={busy} error={error} notice={notice} onBack={() => { setAuthView('login'); setError('') }} onSubmit={submitRecovery} /> : <AuthForm busy={busy} error={error} notice={notice} onForgot={() => { setAuthView('forgot'); setError(''); setNotice('') }} onSubmit={submitCredentials} />}</section>}
+    {!session && <section className="portal-auth"><div className="portal-auth-mark"><KeyRound size={20} /><span>PRIVATE CREATOR ACCESS</span></div><h2>{authView === 'forgot' ? 'Reset your password.' : 'Welcome back.'}</h2><p className="portal-lede">{authView === 'forgot' ? 'Verify with the site recovery code to set a new password.' : 'Sign in with your email and password. A second-factor code is sent to the designated inbox.'}</p>{authView === 'forgot' ? <RecoveryForm busy={busy} error={error} notice={notice} onBack={() => { setAuthView('login'); setError('') }} onSubmit={submitRecovery} /> : <AuthForm busy={busy} error={error} notice={notice} onForgot={() => { setAuthView('forgot'); setError(''); setNotice('') }} onSubmit={submitCredentials} />}</section>}
 
-    {session?.state === 'setup_required' && <section className="portal-auth"><div className="portal-auth-mark"><ShieldCheck size={20} /><span>ONE-TIME SECURITY SETUP</span></div><h2>Set up two-factor sign-in.</h2><p className="portal-lede">Add the secret to an authenticator app, then confirm a current six-digit code.</p>{!setup ? <><button className="portal-button portal-button-orange" type="button" disabled={busy} onClick={beginTotpSetup}>Generate authenticator QR <ArrowUpRight size={16} /></button>{error && <p className="portal-error" role="alert">{error}</p>}</> : <div className="totp-setup"><img className="totp-qr" src={setup.qrCode} alt="Authenticator setup QR code" /><p>Can&apos;t scan it? Enter this key in your authenticator app.</p><code>{setup.manualEntryKey}</code><CodeForm code={code} setCode={setCode} busy={busy} error={error} onSubmit={verifyCode} label="Confirm setup code" /></div>}</section>}
-
-    {session?.state === 'two_factor_pending' && <section className="portal-auth"><div className="portal-auth-mark"><KeyRound size={20} /><span>SECOND VERIFICATION</span></div><h2>Check your authenticator.</h2><p className="portal-lede">Enter the current six-digit code for {session.email}.</p><CodeForm code={code} setCode={setCode} busy={busy} error={error} onSubmit={verifyCode} /></section>}
+    {['setup_required', 'two_factor_pending'].includes(session?.state) && <section className="portal-auth"><div className="portal-auth-mark"><ShieldCheck size={20} /><span>EMAIL SECOND FACTOR</span></div><h2>Check your email.</h2><p className="portal-lede">{session.state === 'setup_required' ? 'Verify the first email code to activate email two-factor sign-in.' : 'Enter the latest six-digit sign-in code sent to the designated 2FA email.'}</p>{notice && <p className="portal-success" role="status">{notice}</p>}<CodeForm code={code} setCode={setCode} busy={busy} error={error} onSubmit={verifyCode} label="Email verification code" /><button className="portal-quiet-button resend-email-code" type="button" disabled={busy} onClick={() => sendEmailCode()}>{busy ? 'Sending…' : emailCodeSent ? 'Resend email code' : 'Send email code'} <ArrowUpRight size={15} /></button></section>}
 
     {session?.state === 'authenticated' && <div className="portal-library">
       <ProfileEditor profile={profile} csrfToken={session.csrfToken} onSaved={setProfile} />
@@ -404,7 +416,7 @@ function PortalPage() {
       <section className="library-section"><div className="portal-section-heading"><div><p className="portal-kicker"><span /> YOUR UPLOADS</p><h2>In the library <span>{String(videos.length).padStart(2, '0')}</span></h2></div></div>{videos.length === 0 ? <div className="empty-library"><Film size={22} /><p>Your uploaded films will appear here.</p></div> : <div className="uploaded-grid">{videos.map((video) => <article className="uploaded-card" key={video.id}><div className="uploaded-poster"><img src={video.thumbnailUrl} alt={`${video.title} thumbnail`} /><span>{formatDuration(video.duration_seconds)}</span></div><h3>{video.title}</h3><p>{video.description}</p><p>{new Date(`${video.created_at.replace(' ', 'T')}Z`).toLocaleDateString()} · {(video.size_bytes / (1024 * 1024)).toFixed(1)} MB</p><video className="uploaded-player" controls playsInline preload="none" poster={video.thumbnailUrl} src={video.videoUrl} aria-label={`Watch ${video.title}`} /></article>)}</div>}</section>
     </div>}
 
-    <p className="portal-footnote"><Clapperboard size={14} /> PRIVATE LIBRARY · AUTHENTICATOR PROTECTED</p>
+    <p className="portal-footnote"><Clapperboard size={14} /> PRIVATE LIBRARY · EMAIL TWO-FACTOR PROTECTED</p>
   </main>
 }
 

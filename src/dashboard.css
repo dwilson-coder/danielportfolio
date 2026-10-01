@@ -1,4 +1,10 @@
 .profile-editor{margin-bottom:42px;padding-bottom:34px;border-bottom:1px solid var(--line)}
+.demo-credentials{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid #614037;background:#2a211e}
+.demo-credentials>div{display:grid;gap:4px}
+.demo-credentials>div span{color:var(--orange);font-size:8px;font-weight:700;letter-spacing:.1em}
+.demo-credentials>div strong{font-size:11px;font-weight:600}
+.demo-credentials>button{flex:0 0 auto;padding:8px 10px;border:1px solid var(--orange);background:transparent;color:var(--orange);font-size:10px;font-weight:700;cursor:pointer}
+.demo-credentials>button:hover{background:var(--orange);color:#171916}
 .profile-editor-grid{display:grid;grid-template-columns:180px minmax(0,1fr);gap:28px;margin-top:22px}
 .profile-avatar-control{display:grid;align-content:start;justify-items:start;gap:10px}
 .profile-avatar-control>img{width:148px;height:148px;object-fit:cover;border:1px solid var(--line);background:#20221f}

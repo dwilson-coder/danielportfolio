@@ -8,9 +8,9 @@ import { rateLimit } from 'express-rate-limit'
 import { fileTypeFromFile } from 'file-type'
 import helmet from 'helmet'
 import multer from 'multer'
-import QRCode from 'qrcode'
+import nodemailer from 'nodemailer'
 import { database } from './database.js'
-import { constantTimeMatch, createTotpSetup, decryptSecret, encryptSecret, hashPassword, hashToken, verifyPassword, verifyTotp } from './security.js'
+import { constantTimeMatch, createEmailOtp, hashPassword, hashToken, verifyEmailOtp, verifyPassword } from './security.js'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const uploadRoot = resolve(process.env.UPLOAD_DIR || join(projectRoot, 'server/uploads'))
@@ -21,6 +21,8 @@ const profileImageDirectory = join(uploadRoot, 'profiles')
 const distDirectory = join(projectRoot, 'dist')
 const sessionCookie = 'frame_session'
 const sessionLifetime = 7 * 24 * 60 * 60 * 1000
+const emailOtpLifetime = 10 * 60 * 1000
+const emailOtpMaxAttempts = 5
 const acceptedVideoExtensions = new Set(['.mp4', '.m4v', '.mov', '.webm'])
 const acceptedVideoMimes = new Set(['video/mp4', 'application/mp4', 'video/x-m4v', 'video/quicktime', 'video/webm'])
 const acceptedThumbnailMimes = new Set(['image/jpeg', 'image/png', 'image/webp'])
@@ -63,6 +65,20 @@ app.use('/api', (req, res, next) => {
 const authRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false })
 const passwordRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false })
 const uploadRateLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false })
+const mailTransport = process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD
+  ? nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    secure: process.env.SMTP_SECURE === 'true',
+    requireTLS: process.env.SMTP_SECURE !== 'true',
+    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD },
+  })
+  : null
+
+function maskEmail(email) {
+  const [localPart, domain] = email.split('@')
+  return `${localPart.slice(0, 1)}${'*'.repeat(Math.max(2, Math.min(localPart.length - 1, 6)))}@${domain}`
+}
 
 function readCookie(req, name) {
   const pair = (req.headers.cookie || '').split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))
@@ -84,7 +100,7 @@ function loadSession(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Sign in to continue.' })
   const session = database.prepare(`
     SELECT sessions.token_hash, sessions.csrf_token, sessions.user_id, sessions.state, sessions.expires_at,
-      users.email, users.totp_enabled, users.totp_secret, users.pending_totp_secret
+      users.email, users.email_2fa_enabled
     FROM sessions JOIN users ON users.id = sessions.user_id
     WHERE sessions.token_hash = ? AND sessions.expires_at > ?
   `).get(hashToken(token), Date.now())
@@ -104,7 +120,7 @@ function requireCsrf(req, res, next) {
 }
 
 function requireTwoFactor(req, res, next) {
-  if (req.session.state !== 'authenticated' || req.session.totp_enabled !== 1) {
+  if (req.session.state !== 'authenticated' || req.session.email_2fa_enabled !== 1) {
     return res.status(403).json({ error: 'Complete two-factor authentication before continuing.' })
   }
   next()
@@ -126,7 +142,7 @@ function sessionPayload(session) {
     state: session.state,
     email: session.email,
     csrfToken: session.csrf_token,
-    twoFactorEnabled: session.totp_enabled === 1,
+    twoFactorEnabled: session.email_2fa_enabled === 1,
   }
 }
 
@@ -385,40 +401,56 @@ router.post('/auth/login', passwordRateLimit, async (req, res) => {
     return res.status(401).json({ error: 'Email or password is incorrect.' })
   }
   const user = database.prepare('SELECT * FROM users WHERE email = ?').get(email)
-  const state = user.totp_enabled ? 'two_factor_pending' : 'setup_required'
+  const state = user.email_2fa_enabled ? 'two_factor_pending' : 'setup_required'
   const csrfToken = issueSession(req, res, user.id, state)
-  return res.json({ state, email, csrfToken, twoFactorEnabled: user.totp_enabled === 1 })
+  return res.json({ state, email, csrfToken, twoFactorEnabled: user.email_2fa_enabled === 1 })
 })
 
-router.post('/auth/totp/setup', authRateLimit, loadSession, requireCsrf, async (req, res) => {
-  if (req.session.state !== 'setup_required' || req.session.totp_enabled === 1) {
-    return res.status(409).json({ error: 'Two-factor setup is not available for this session.' })
+router.post('/auth/email-code/send', authRateLimit, loadSession, requireCsrf, async (req, res) => {
+  if (!['setup_required', 'two_factor_pending'].includes(req.session.state)) {
+    return res.status(409).json({ error: 'This session is not waiting for email verification.' })
   }
-  const setup = createTotpSetup(req.session.email)
-  database.prepare('UPDATE users SET pending_totp_secret = ? WHERE id = ?').run(encryptSecret(setup.base32), req.session.user_id)
-  const qrCode = await QRCode.toDataURL(setup.otpauth_url)
-  return res.json({ qrCode, manualEntryKey: setup.base32 })
+  const recipient = process.env.TWO_FACTOR_EMAIL
+  if (!isValidEmail(recipient)) return res.status(503).json({ error: 'Email two-factor delivery is not configured.' })
+  if (!mailTransport) return res.status(503).json({ error: 'Email delivery is unavailable. Configure the SMTP settings and try again.' })
+
+  const { code, hash } = createEmailOtp(req.session.user_id)
+  database.prepare('UPDATE users SET email_otp_hash = ?, email_otp_expires_at = ?, email_otp_attempts = 0 WHERE id = ?')
+    .run(hash, Date.now() + emailOtpLifetime, req.session.user_id)
+  try {
+    await mailTransport.sendMail({
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to: recipient,
+      subject: 'Your Frame by Frame sign-in code',
+      text: `Your Frame by Frame verification code is ${code}. It expires in 10 minutes. If you did not request it, ignore this email.`,
+    })
+  } catch (error) {
+    database.prepare('UPDATE users SET email_otp_hash = NULL, email_otp_expires_at = NULL WHERE id = ?').run(req.session.user_id)
+    console.error('Unable to send sign-in code:', error.message)
+    return res.status(503).json({ error: 'The verification email could not be sent. Check the SMTP settings and try again.' })
+  }
+  return res.json({ message: `A verification code was sent to ${maskEmail(recipient)}.` })
 })
 
-router.post('/auth/totp/setup/verify', authRateLimit, loadSession, requireCsrf, (req, res) => {
-  if (req.session.state !== 'setup_required' || !req.session.pending_totp_secret) {
-    return res.status(409).json({ error: 'Start two-factor setup first.' })
+router.post('/auth/email-code/verify', authRateLimit, loadSession, requireCsrf, (req, res) => {
+  if (!['setup_required', 'two_factor_pending'].includes(req.session.state)) {
+    return res.status(409).json({ error: 'This session is not waiting for email verification.' })
   }
-  const secret = decryptSecret(req.session.pending_totp_secret)
-  if (!verifyTotp(secret, req.body.code)) return res.status(400).json({ error: 'That verification code is invalid or expired.' })
-  database.prepare('UPDATE users SET totp_secret = pending_totp_secret, pending_totp_secret = NULL, totp_enabled = 1 WHERE id = ?')
+  const user = database.prepare('SELECT email_otp_hash, email_otp_expires_at, email_otp_attempts FROM users WHERE id = ?')
+    .get(req.session.user_id)
+  if (!user.email_otp_hash || !user.email_otp_expires_at || user.email_otp_expires_at <= Date.now()) {
+    return res.status(401).json({ error: 'That verification code expired. Send a new code.' })
+  }
+  if (user.email_otp_attempts >= emailOtpMaxAttempts) {
+    database.prepare('UPDATE users SET email_otp_hash = NULL, email_otp_expires_at = NULL WHERE id = ?').run(req.session.user_id)
+    return res.status(429).json({ error: 'Too many code attempts. Send a new verification code.' })
+  }
+  if (!verifyEmailOtp(req.session.user_id, req.body.code, user.email_otp_hash)) {
+    database.prepare('UPDATE users SET email_otp_attempts = email_otp_attempts + 1 WHERE id = ?').run(req.session.user_id)
+    return res.status(401).json({ error: 'That verification code is incorrect.' })
+  }
+  database.prepare('UPDATE users SET email_2fa_enabled = 1, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_attempts = 0 WHERE id = ?')
     .run(req.session.user_id)
-  database.prepare("UPDATE sessions SET state = 'authenticated' WHERE token_hash = ?").run(req.session.token_hash)
-  return res.json({ state: 'authenticated', email: req.session.email, csrfToken: req.session.csrf_token, twoFactorEnabled: true })
-})
-
-router.post('/auth/totp/verify', authRateLimit, loadSession, requireCsrf, (req, res) => {
-  if (req.session.state !== 'two_factor_pending' || !req.session.totp_secret) {
-    return res.status(409).json({ error: 'This session is not waiting for a two-factor code.' })
-  }
-  if (!verifyTotp(decryptSecret(req.session.totp_secret), req.body.code)) {
-    return res.status(401).json({ error: 'That verification code is invalid or expired.' })
-  }
   database.prepare("UPDATE sessions SET state = 'authenticated' WHERE token_hash = ?").run(req.session.token_hash)
   return res.json({ state: 'authenticated', email: req.session.email, csrfToken: req.session.csrf_token, twoFactorEnabled: true })
 })
@@ -560,6 +592,20 @@ app.use((error, req, res, next) => {
   console.error('Portal request failed:', error.message)
   return res.status(500).json({ error: 'The request could not be completed.' })
 })
+
+async function seedDevelopmentDemoOwner() {
+  if (!process.argv.includes('--demo') || database.prepare('SELECT COUNT(*) AS count FROM users').get().count > 0) return
+  const email = process.env.PORTAL_DEMO_EMAIL || 'admin@example.com'
+  const password = process.env.PORTAL_DEMO_PASSWORD || 'REDACTED'
+  const credentials = await hashPassword(password)
+  const result = database.prepare('INSERT INTO users (email, password_salt, password_hash) VALUES (?, ?, ?)')
+    .run(email, credentials.salt, credentials.hash)
+  database.prepare('INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)')
+    .run(Number(result.lastInsertRowid), defaultCreatorName, process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', process.env.VITE_CREATOR_BIO || 'Independent filmmaker and motion designer, drawn to small details and big feelings.', JSON.stringify(['Filmmaking', 'Motion design', 'Editing']))
+  console.log(`Development demo account initialized: ${email}. Authenticator setup is required on first sign-in.`)
+}
+
+await seedDevelopmentDemoOwner()
 
 const port = Number(process.env.PORT || 3001)
 const server = createServer(app)

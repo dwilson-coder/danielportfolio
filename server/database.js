@@ -18,6 +18,10 @@ database.exec(`
     totp_secret TEXT,
     pending_totp_secret TEXT,
     totp_enabled INTEGER NOT NULL DEFAULT 0,
+    email_2fa_enabled INTEGER NOT NULL DEFAULT 0,
+    email_otp_hash TEXT,
+    email_otp_expires_at INTEGER,
+    email_otp_attempts INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -62,5 +66,11 @@ database.exec(`
 const videoColumns = new Set(database.prepare('PRAGMA table_info(videos)').all().map((column) => column.name))
 if (!videoColumns.has('description')) database.exec("ALTER TABLE videos ADD COLUMN description TEXT NOT NULL DEFAULT ''")
 if (!videoColumns.has('is_public')) database.exec('ALTER TABLE videos ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1')
+
+const userColumns = new Set(database.prepare('PRAGMA table_info(users)').all().map((column) => column.name))
+if (!userColumns.has('email_otp_hash')) database.exec('ALTER TABLE users ADD COLUMN email_otp_hash TEXT')
+if (!userColumns.has('email_otp_expires_at')) database.exec('ALTER TABLE users ADD COLUMN email_otp_expires_at INTEGER')
+if (!userColumns.has('email_otp_attempts')) database.exec('ALTER TABLE users ADD COLUMN email_otp_attempts INTEGER NOT NULL DEFAULT 0')
+if (!userColumns.has('email_2fa_enabled')) database.exec('ALTER TABLE users ADD COLUMN email_2fa_enabled INTEGER NOT NULL DEFAULT 0')
 
 database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now())
