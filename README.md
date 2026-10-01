@@ -17,11 +17,10 @@ Use Node.js 24 or newer. Copy `.env.example` to `.env`, then set unique values f
 
 ```sh
 npm install
-npm run create-user -- basherdan21@gmail.com
 npm run dev
 ```
 
-The one-time owner-creation command prints a cryptographically generated password. Save it securely. Sign in at `http://localhost:5173/portal`; first sign-in requires setup in an authenticator app. New accounts cannot be created in the browser. The **Forgot your password?** flow requires the private recovery code from `.env`; no password-reset email service is configured.
+The local demo credentials are `admin@example.com` / `REDACTED`. They are for development only. On first sign-in at `http://localhost:5173/admin`, scan the authenticator QR code and verify a current code; this completes setup and opens the admin dashboard. New accounts cannot be created in the browser. Production owner accounts should be created with `npm run create-user -- owner@example.com`, which generates a random password. The **Forgot your password?** flow requires the private recovery code from `.env`; no password-reset email service is configured.
 
 Vite serves the site on port `5173` and proxies `/api` to the Express API on port `3001`.
 
@@ -37,7 +36,7 @@ Vite serves the site on port `5173` and proxies `/api` to the Express API on por
 - Passwords use Node scrypt with per-user salts. Authenticator secrets are encrypted at rest.
 - Sessions use random database-backed tokens in `HttpOnly`, `SameSite=Strict` cookies. Mutating requests require CSRF tokens; login, recovery, and uploads are rate-limited.
 - Video and thumbnail files are inspected by file signature, not just filename or browser MIME type. Profile images are limited to JPEG, PNG, and WebP, up to 5 MB.
-- Production requires a 32-character-or-longer `SESSION_SECRET` and `PORTAL_RECOVERY_CODE`. Serve the app behind HTTPS; production session cookies use `Secure`.
+- Production requires a 32-character-or-longer `SESSION_SECRET` and `PORTAL_RECOVERY_CODE`. Serve the app behind HTTPS; production session cookies use `Secure`. Explicit demo passwords are refused when `NODE_ENV=production`.
 - SQLite and media are stored in `server/data/` and `server/uploads/`, both ignored by git. Back up both locations. The SQLite driver is Node's built-in `node:sqlite` module and currently emits an experimental-feature warning.
 
 ## Production
@@ -51,7 +50,7 @@ npm start
 
 Host this Node server on a platform with persistent disk; GitHub Pages alone cannot run the authenticated API or SQLite storage. Set `TRUST_PROXY=1` only when the app is behind a trusted HTTPS reverse proxy.
 
-Open Graph and Twitter cards use the deployed site's `og.jpg`, also shown in this README. Set `VITE_SITE_URL` to the exact public origin and base path, ending in `/`. Contact email defaults to `basherdan21@gmail.com`. The GitHub footer link defaults to `https://github.com/dwilson-coder/danielportfolio.git`; replace the example YouTube, LinkedIn, and Instagram URLs with the creator's own profiles.
+Open Graph and Twitter cards use the deployed site's `og.jpg`, also shown in this README. Set `VITE_SITE_URL` to the exact public origin and base path, ending in `/`. Contact email defaults to `basherdan21@gmail.com`. The GitHub footer link is `https://github.com/dwilson-coder/danielportfolio`; Instagram is hidden until its URL is configured. Replace the example YouTube and LinkedIn URLs with the creator's own profiles.
 
 ## Planned updates
 
@@ -63,7 +62,7 @@ Open Graph and Twitter cards use the deployed site's `og.jpg`, also shown in thi
 ## Commands
 
 - `npm run dev` starts the API and Vite server together.
-- `npm run create-user -- email@example.com` creates the first owner account.
+- `npm run create-user -- email@example.com` creates the first owner account with a random password.
 - `npm run build` builds the site and PWA assets.
 - `npm run lint` runs Oxlint.
 - `npm start` serves the production build and API.
