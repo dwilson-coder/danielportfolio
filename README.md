@@ -1,6 +1,7 @@
 # Frame by Frame
 
 ![Frame by Frame portfolio](og.jpg)
+[External link](https://danielwilsonportfolio.netlify.app/)
 
 An independent film, motion design, and animation portfolio with a private creator dashboard.
 
