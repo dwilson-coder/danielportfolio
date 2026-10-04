@@ -59,6 +59,28 @@ database.exec(`
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS account_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL COLLATE NOCASE,
+    display_name TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    password_salt TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+    review_note TEXT NOT NULL DEFAULT '',
+    reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS account_requests_one_pending ON account_requests(email) WHERE status = 'pending';
   CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
   CREATE INDEX IF NOT EXISTS videos_owner ON videos(user_id, created_at DESC);
 `)
@@ -73,4 +95,11 @@ if (!userColumns.has('email_otp_expires_at')) database.exec('ALTER TABLE users A
 if (!userColumns.has('email_otp_attempts')) database.exec('ALTER TABLE users ADD COLUMN email_otp_attempts INTEGER NOT NULL DEFAULT 0')
 if (!userColumns.has('email_2fa_enabled')) database.exec('ALTER TABLE users ADD COLUMN email_2fa_enabled INTEGER NOT NULL DEFAULT 0')
 
+if (!userColumns.has('role')) database.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+if (!userColumns.has('status')) database.exec("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+if (!userColumns.has('display_name')) database.exec("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+// The original single-owner account becomes the first admin.
+database.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users) AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin')")
+
 database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now())
+database.prepare('DELETE FROM password_reset_tokens WHERE expires_at <= ?').run(Date.now())

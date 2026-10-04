@@ -1,0 +1,316 @@
+{
+  "info": {
+    "name": "Frame by Frame - Media & Portfolio API",
+    "description": "Video upload, thumbnail management, byte-range video streaming, and public creator portfolio endpoints.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Public Portfolio",
+      "item": [
+        {
+          "name": "Get public profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/public/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["public", "profile"]
+            },
+            "description": "Returns creator public display name, location, bio, tags, and image URL."
+          }
+        },
+        {
+          "name": "Get public profile image",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/public/profile/image",
+              "host": ["{{baseUrl}}"],
+              "path": ["public", "profile", "image"]
+            },
+            "description": "Returns binary image stream for the creator profile image."
+          }
+        },
+        {
+          "name": "List public portfolio videos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/portfolio-videos",
+              "host": ["{{baseUrl}}"],
+              "path": ["portfolio-videos"]
+            },
+            "description": "Returns all public videos published by the creator."
+          }
+        },
+        {
+          "name": "Get public video by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/portfolio-videos/{{videoId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["portfolio-videos", "{{videoId}}"]
+            },
+            "description": "Returns details of a single public video."
+          }
+        },
+        {
+          "name": "Stream public video file",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Range",
+                "value": "bytes=0-1024000"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/portfolio-videos/{{videoId}}/file",
+              "host": ["{{baseUrl}}"],
+              "path": ["portfolio-videos", "{{videoId}}", "file"]
+            },
+            "description": "Streams video content with HTTP 206 Partial Content byte-range support."
+          }
+        },
+        {
+          "name": "Get public video thumbnail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/portfolio-videos/{{videoId}}/thumbnail",
+              "host": ["{{baseUrl}}"],
+              "path": ["portfolio-videos", "{{videoId}}", "thumbnail"]
+            },
+            "description": "Returns cached JPEG thumbnail for the public video."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Creator Profile",
+      "item": [
+        {
+          "name": "Get creator profile (authenticated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["profile"]
+            },
+            "description": "Returns editable profile fields for the logged in creator."
+          }
+        },
+        {
+          "name": "Update creator profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"Daniel Wilson\",\n  \"location\": \"Pittsburgh, PA\",\n  \"bio\": \"Independent filmmaker and motion designer.\",\n  \"tags\": [\"Filmmaking\", \"Motion design\", \"Editing\"]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["profile"]
+            },
+            "description": "Updates creator display name, location, bio, and tag list."
+          }
+        },
+        {
+          "name": "Upload creator profile image",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "image",
+                  "type": "file",
+                  "src": ""
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/profile/image",
+              "host": ["{{baseUrl}}"],
+              "path": ["profile", "image"]
+            },
+            "description": "Uploads a JPEG, PNG, or WebP profile image up to 5 MB."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Creator Videos & Uploads",
+      "item": [
+        {
+          "name": "List creator videos",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/videos",
+              "host": ["{{baseUrl}}"],
+              "path": ["videos"]
+            },
+            "description": "Lists all creator uploaded videos."
+          }
+        },
+        {
+          "name": "List creator thumbnails library",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/videos/thumbnails",
+              "host": ["{{baseUrl}}"],
+              "path": ["videos", "thumbnails"]
+            },
+            "description": "Lists all available thumbnails for selection."
+          }
+        },
+        {
+          "name": "Stream private video file",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Range",
+                "value": "bytes=0-1024000"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/videos/{{videoId}}/file",
+              "host": ["{{baseUrl}}"],
+              "path": ["videos", "{{videoId}}", "file"]
+            },
+            "description": "Streams private video with range header support."
+          }
+        },
+        {
+          "name": "Get private video thumbnail",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/videos/{{videoId}}/thumbnail",
+              "host": ["{{baseUrl}}"],
+              "path": ["videos", "{{videoId}}", "thumbnail"]
+            },
+            "description": "Retrieves private video thumbnail."
+          }
+        },
+        {
+          "name": "Upload video & generated thumbnail",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "video",
+                  "type": "file",
+                  "src": ""
+                },
+                {
+                  "key": "thumbnail",
+                  "type": "file",
+                  "src": ""
+                },
+                {
+                  "key": "title",
+                  "value": "Showreel 2026",
+                  "type": "text"
+                },
+                {
+                  "key": "description",
+                  "value": "Highlights of cinematography and animation.",
+                  "type": "text"
+                },
+                {
+                  "key": "duration",
+                  "value": "120",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/videos",
+              "host": ["{{baseUrl}}"],
+              "path": ["videos"]
+            },
+            "description": "Uploads an MP4, WebM, or MOV video (up to 500MB) along with an extracted thumbnail."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Emergency Portal Recovery",
+      "item": [
+        {
+          "name": "Reset password with portal recovery code",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"recoveryCode\": \"PortalRecovery-Local-2026-5bf3ce8bd8134b6394a59d70\",\n  \"password\": \"{{newPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/videos/recovery-code",
+              "host": ["{{baseUrl}}"],
+              "path": ["videos", "recovery-code"]
+            },
+            "description": "Emergency recovery endpoint using private server PORTAL_RECOVERY_CODE."
+          }
+        }
+      ]
+    }
+  ]
+}

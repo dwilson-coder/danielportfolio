@@ -20,7 +20,7 @@ if (database.prepare('SELECT COUNT(*) AS count FROM users').get().count > 0) {
 
 const password = requestedPassword || randomBytes(24).toString('base64url')
 const credentials = await hashPassword(password)
-const result = database.prepare('INSERT INTO users (email, password_salt, password_hash) VALUES (?, ?, ?)')
+const result = database.prepare("INSERT INTO users (email, password_salt, password_hash, role) VALUES (?, ?, ?, 'admin')")
   .run(email, credentials.salt, credentials.hash)
 database.prepare('INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)')
   .run(Number(result.lastInsertRowid), process.env.VITE_CREATOR_NAME || 'Daniel Wilson', process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', process.env.VITE_CREATOR_BIO || '', JSON.stringify(['Filmmaking', 'Motion design', 'Editing']))

@@ -9,6 +9,7 @@ import { fileTypeFromFile } from 'file-type'
 import helmet from 'helmet'
 import multer from 'multer'
 import nodemailer from 'nodemailer'
+import { createAccountsRouter } from './accounts.js'
 import { database } from './database.js'
 import { constantTimeMatch, createEmailOtp, hashPassword, hashToken, verifyEmailOtp, verifyPassword } from './security.js'
 
@@ -62,8 +63,10 @@ app.use('/api', (req, res, next) => {
   next()
 })
 
-const authRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12, standardHeaders: 'draft-8', legacyHeaders: false })
-const passwordRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 6, standardHeaders: 'draft-8', legacyHeaders: false })
+// Relaxed outside production so Postman collection runs don't trip the limiters.
+const rateLimitScale = process.env.NODE_ENV === 'production' ? 1 : 25
+const authRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 12 * rateLimitScale, standardHeaders: 'draft-8', legacyHeaders: false })
+const passwordRateLimit = rateLimit({ windowMs: 15 * 60 * 1000, limit: 6 * rateLimitScale, standardHeaders: 'draft-8', legacyHeaders: false })
 const uploadRateLimit = rateLimit({ windowMs: 60 * 60 * 1000, limit: 20, standardHeaders: 'draft-8', legacyHeaders: false })
 const mailTransport = process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD
   ? nodemailer.createTransport({
@@ -78,6 +81,13 @@ const mailTransport = process.env.SMTP_HOST && process.env.SMTP_USER && process.
 function maskEmail(email) {
   const [localPart, domain] = email.split('@')
   return `${localPart.slice(0, 1)}${'*'.repeat(Math.max(2, Math.min(localPart.length - 1, 6)))}@${domain}`
+}
+
+function maskPhone(phone) {
+  if (!phone || typeof phone !== 'string') return '(***) ***-****'
+  const digits = phone.replace(/\D/g, '')
+  if (digits.length <= 4) return '***-****'
+  return `(***) ***-${digits.slice(-4)}`
 }
 
 function readCookie(req, name) {
@@ -100,9 +110,9 @@ function loadSession(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Sign in to continue.' })
   const session = database.prepare(`
     SELECT sessions.token_hash, sessions.csrf_token, sessions.user_id, sessions.state, sessions.expires_at,
-      users.email, users.email_2fa_enabled
+      users.email, users.email_2fa_enabled, users.role
     FROM sessions JOIN users ON users.id = sessions.user_id
-    WHERE sessions.token_hash = ? AND sessions.expires_at > ?
+    WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.status = 'active'
   `).get(hashToken(token), Date.now())
   if (!session) {
     clearSessionCookie(res)
@@ -143,6 +153,7 @@ function sessionPayload(session) {
     email: session.email,
     csrfToken: session.csrf_token,
     twoFactorEnabled: session.email_2fa_enabled === 1,
+    role: session.role,
   }
 }
 
@@ -401,9 +412,10 @@ router.post('/auth/login', passwordRateLimit, async (req, res) => {
     return res.status(401).json({ error: 'Email or password is incorrect.' })
   }
   const user = database.prepare('SELECT * FROM users WHERE email = ?').get(email)
+  if (user.status !== 'active') return res.status(401).json({ error: 'Email or password is incorrect.' })
   const state = user.email_2fa_enabled ? 'two_factor_pending' : 'setup_required'
   const csrfToken = issueSession(req, res, user.id, state)
-  return res.json({ state, email, csrfToken, twoFactorEnabled: user.email_2fa_enabled === 1 })
+  return res.json({ state, email, csrfToken, twoFactorEnabled: user.email_2fa_enabled === 1, role: user.role })
 })
 
 router.post('/auth/email-code/send', authRateLimit, loadSession, requireCsrf, async (req, res) => {
@@ -412,11 +424,17 @@ router.post('/auth/email-code/send', authRateLimit, loadSession, requireCsrf, as
   }
   const recipient = process.env.TWO_FACTOR_EMAIL
   if (!isValidEmail(recipient)) return res.status(503).json({ error: 'Email two-factor delivery is not configured.' })
-  if (!mailTransport) return res.status(503).json({ error: 'Email delivery is unavailable. Configure the SMTP settings and try again.' })
+  const devConsoleDelivery = !mailTransport && process.env.NODE_ENV !== 'production'
+  if (!mailTransport && !devConsoleDelivery) return res.status(503).json({ error: 'Email delivery is unavailable. Configure the SMTP settings and try again.' })
 
   const { code, hash } = createEmailOtp(req.session.user_id)
   database.prepare('UPDATE users SET email_otp_hash = ?, email_otp_expires_at = ?, email_otp_attempts = 0 WHERE id = ?')
     .run(hash, Date.now() + emailOtpLifetime, req.session.user_id)
+  if (devConsoleDelivery) {
+    console.log(`[dev] Email 2FA code for ${req.session.email}: ${code}`)
+    res.setHeader('X-Dev-OTP', code)
+    return res.json({ message: 'SMTP is not configured; the verification code was printed to the API server console (development only).' })
+  }
   try {
     await mailTransport.sendMail({
       from: process.env.SMTP_FROM || process.env.SMTP_USER,
@@ -452,7 +470,7 @@ router.post('/auth/email-code/verify', authRateLimit, loadSession, requireCsrf, 
   database.prepare('UPDATE users SET email_2fa_enabled = 1, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_attempts = 0 WHERE id = ?')
     .run(req.session.user_id)
   database.prepare("UPDATE sessions SET state = 'authenticated' WHERE token_hash = ?").run(req.session.token_hash)
-  return res.json({ state: 'authenticated', email: req.session.email, csrfToken: req.session.csrf_token, twoFactorEnabled: true })
+  return res.json({ state: 'authenticated', email: req.session.email, csrfToken: req.session.csrf_token, twoFactorEnabled: true, role: req.session.role })
 })
 
 router.post('/auth/logout', loadSession, requireCsrf, (req, res) => {
@@ -571,6 +589,16 @@ router.post('/videos', loadSession, requireCsrf, requireTwoFactor, uploadRateLim
   })
 })
 
+router.use(createAccountsRouter({
+  loadSession,
+  requireCsrf,
+  requireTwoFactor,
+  passwordRateLimit,
+  mailTransport,
+  isValidEmail,
+  clearSessionCookie,
+}))
+
 app.use('/api', router)
 app.use('/api', (req, res) => res.status(404).json({ error: 'API route not found.' }))
 
@@ -598,7 +626,7 @@ async function seedDevelopmentDemoOwner() {
   const email = process.env.PORTAL_DEMO_EMAIL || 'admin@example.com'
   const password = process.env.PORTAL_DEMO_PASSWORD || 'REDACTED'
   const credentials = await hashPassword(password)
-  const result = database.prepare('INSERT INTO users (email, password_salt, password_hash) VALUES (?, ?, ?)')
+  const result = database.prepare("INSERT INTO users (email, password_salt, password_hash, role) VALUES (?, ?, ?, 'admin')")
     .run(email, credentials.salt, credentials.hash)
   database.prepare('INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)')
     .run(Number(result.lastInsertRowid), defaultCreatorName, process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', process.env.VITE_CREATOR_BIO || 'Independent filmmaker and motion designer, drawn to small details and big feelings.', JSON.stringify(['Filmmaking', 'Motion design', 'Editing']))
@@ -608,5 +636,6 @@ async function seedDevelopmentDemoOwner() {
 await seedDevelopmentDemoOwner()
 
 const port = Number(process.env.PORT || 3001)
+const host = process.env.HOST || '0.0.0.0'
 const server = createServer(app)
-server.listen(port, () => console.log(`Portal API listening on http://localhost:${port}`))
+server.listen(port, host, () => console.log(`Portal API listening on http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`))

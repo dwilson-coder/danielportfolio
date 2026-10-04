@@ -1,0 +1,1053 @@
+{
+  "info": {
+    "name": "Frame by Frame - Accounts API",
+    "description": "Run folders in order: sign up -> log in as admin (send + verify the email code from the API console) -> admin approves the request -> manage users. Cookies are handled by Postman; the CSRF token is saved automatically after log in / verify.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Sign up & recovery",
+      "item": [
+        {
+          "name": "Health check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Body check', () => { pm.expect(pm.response.json().status).to.eql('ok') })"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Service health"
+          }
+        },
+        {
+          "name": "Sign up (create account request)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 202', () => pm.response.to.have.status(202))",
+                  "pm.test('Matches Message schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"message\"],\"properties\":{\"message\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{signupEmail}}\",\n  \"password\": \"{{signupPassword}}\",\n  \"displayName\": \"Postman Tester\",\n  \"message\": \"Requesting access from Postman.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/accounts/signup",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "accounts",
+                "signup"
+              ]
+            },
+            "description": "Request a new account\n\nCreates a pending account request that an administrator must approve. The response is identical whether or not the email is already registered."
+          }
+        },
+        {
+          "name": "Request password reset",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 202', () => pm.response.to.have.status(202))",
+                  "pm.test('Matches Message schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"message\"],\"properties\":{\"message\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{signupEmail}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/password-reset/request",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "password-reset",
+                "request"
+              ]
+            },
+            "description": "Email a password reset token\n\nAlways returns 202 to avoid account enumeration. In development without SMTP the token is printed to the API console."
+          }
+        },
+        {
+          "name": "Confirm password reset",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches Message schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"message\"],\"properties\":{\"message\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"{{resetToken}}\",\n  \"password\": \"{{signupPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/password-reset/confirm",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "password-reset",
+                "confirm"
+              ]
+            },
+            "description": "Set a new password with a reset token\n\nToken is single-use and expires after 60 minutes. All sessions are revoked."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Log in & session",
+      "item": [
+        {
+          "name": "Log in",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches Session schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"state\",\"email\",\"csrfToken\",\"twoFactorEnabled\",\"role\"],\"properties\":{\"state\":{\"type\":\"string\",\"enum\":[\"setup_required\",\"two_factor_pending\",\"authenticated\"]},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"csrfToken\":{\"type\":\"string\"},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]}}}))",
+                  "if (pm.response.code === 200) pm.environment.set('csrfToken', pm.response.json().csrfToken)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/login",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ]
+            },
+            "description": "Start a session (step 1 of 2)\n\nSets the HttpOnly `frame_session` cookie and returns the CSRF token. The session is not fully authenticated until the email code is verified."
+          }
+        },
+        {
+          "name": "Send email code",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches Message schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"message\"],\"properties\":{\"message\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/email-code/send",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "email-code",
+                "send"
+              ]
+            },
+            "description": "Send the 2FA code\n\nWithout SMTP in development, the code is printed to the API server console."
+          }
+        },
+        {
+          "name": "Verify email code",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches Session schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"state\",\"email\",\"csrfToken\",\"twoFactorEnabled\",\"role\"],\"properties\":{\"state\":{\"type\":\"string\",\"enum\":[\"setup_required\",\"two_factor_pending\",\"authenticated\"]},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"csrfToken\":{\"type\":\"string\"},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]}}}))",
+                  "if (pm.response.code === 200) pm.environment.set('csrfToken', pm.response.json().csrfToken)",
+                  "pm.test('Body check', () => { pm.expect(pm.response.json().state).to.eql('authenticated') })"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{otpCode}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/auth/email-code/verify",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "email-code",
+                "verify"
+              ]
+            },
+            "description": "Complete 2FA (step 2 of 2)"
+          }
+        },
+        {
+          "name": "Get session",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches Session schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"state\",\"email\",\"csrfToken\",\"twoFactorEnabled\",\"role\"],\"properties\":{\"state\":{\"type\":\"string\",\"enum\":[\"setup_required\",\"two_factor_pending\",\"authenticated\"]},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"csrfToken\":{\"type\":\"string\"},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/session",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "session"
+              ]
+            },
+            "description": "Current session info"
+          }
+        },
+        {
+          "name": "Log out",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 204', () => pm.response.to.have.status(204))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/logout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ]
+            },
+            "description": "End the session"
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. My account",
+      "item": [
+        {
+          "name": "Get my account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches User schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"role\",\"status\",\"twoFactorEnabled\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\",\"maxLength\":80},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]},\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"disabled\"]},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"createdAt\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/account",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "account"
+              ]
+            },
+            "description": "Read own account"
+          }
+        },
+        {
+          "name": "Update my account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches User schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"role\",\"status\",\"twoFactorEnabled\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\",\"maxLength\":80},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]},\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"disabled\"]},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"createdAt\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"Renamed in Postman\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/account",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "account"
+              ]
+            },
+            "description": "Update own display name or email\n\nChanging email requires `currentPassword`."
+          }
+        },
+        {
+          "name": "Change my password",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches Message schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"message\"],\"properties\":{\"message\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"{{password}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/account/password",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "account",
+                "password"
+              ]
+            },
+            "description": "Change own password\n\nRevokes all sessions; sign in again afterwards."
+          }
+        },
+        {
+          "name": "Delete my account",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 204', () => pm.response.to.have.status(204))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"currentPassword\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/account",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "account"
+              ]
+            },
+            "description": "Delete own account\n\nThe last active administrator cannot be deleted."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Admin - users",
+      "item": [
+        {
+          "name": "List users",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches UserList schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"items\",\"total\",\"limit\",\"offset\"],\"properties\":{\"items\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"role\",\"status\",\"twoFactorEnabled\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\",\"maxLength\":80},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]},\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"disabled\"]},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"createdAt\":{\"type\":\"string\"}}}},\"total\":{\"type\":\"integer\"},\"limit\":{\"type\":\"integer\"},\"offset\":{\"type\":\"integer\"}}}))",
+                  "const found = pm.response.json().items.find(u => u.email === pm.environment.get('signupEmail'))",
+                  "if (found) pm.environment.set('userId', found.id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "25",
+                  "disabled": false
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "disabled": false
+                },
+                {
+                  "key": "status",
+                  "value": "active",
+                  "disabled": true
+                },
+                {
+                  "key": "role",
+                  "value": "user",
+                  "disabled": true
+                },
+                {
+                  "key": "q",
+                  "value": "",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "List users"
+          }
+        },
+        {
+          "name": "Create user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 201', () => pm.response.to.have.status(201))",
+                  "pm.test('Matches User schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"role\",\"status\",\"twoFactorEnabled\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\",\"maxLength\":80},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]},\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"disabled\"]},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"createdAt\":{\"type\":\"string\"}}}))",
+                  "pm.environment.set('userId', pm.response.json().id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"created.by.admin@example.com\",\n  \"password\": \"{{signupPassword}}\",\n  \"displayName\": \"Created by admin\",\n  \"role\": \"user\",\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users"
+              ]
+            },
+            "description": "Create a user directly"
+          }
+        },
+        {
+          "name": "Get user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches User schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"role\",\"status\",\"twoFactorEnabled\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\",\"maxLength\":80},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]},\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"disabled\"]},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"createdAt\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{userId}}"
+              ]
+            },
+            "description": "Read one user"
+          }
+        },
+        {
+          "name": "Update user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches User schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"role\",\"status\",\"twoFactorEnabled\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\",\"maxLength\":80},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]},\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"disabled\"]},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"createdAt\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"displayName\": \"Updated by admin\",\n  \"status\": \"active\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{userId}}"
+              ]
+            },
+            "description": "Update email, name, role, status or password\n\nDisabling a user, changing role/password revokes their sessions. The last active admin cannot be demoted or disabled."
+          }
+        },
+        {
+          "name": "Delete user",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 204', () => pm.response.to.have.status(204))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/users/{{userId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "users",
+                "{{userId}}"
+              ]
+            },
+            "description": "Delete a user"
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Admin - account requests",
+      "item": [
+        {
+          "name": "List account requests",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches AccountRequestList schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"items\",\"total\",\"limit\",\"offset\"],\"properties\":{\"items\":{\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"message\",\"status\",\"reviewNote\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"enum\":[\"pending\",\"approved\",\"rejected\"]},\"reviewNote\":{\"type\":\"string\"},\"reviewedBy\":{\"type\":[\"integer\",\"null\"]},\"reviewedAt\":{\"type\":[\"string\",\"null\"]},\"createdAt\":{\"type\":\"string\"}}}},\"total\":{\"type\":\"integer\"},\"limit\":{\"type\":\"integer\"},\"offset\":{\"type\":\"integer\"}}}))",
+                  "const found = pm.response.json().items.find(r => r.email === pm.environment.get('signupEmail'))",
+                  "if (found) pm.environment.set('requestId', found.id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/account-requests",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "account-requests"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending",
+                  "disabled": false
+                },
+                {
+                  "key": "limit",
+                  "value": "25",
+                  "disabled": false
+                },
+                {
+                  "key": "offset",
+                  "value": "0",
+                  "disabled": false
+                }
+              ]
+            },
+            "description": "List account requests"
+          }
+        },
+        {
+          "name": "Get account request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches AccountRequest schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"message\",\"status\",\"reviewNote\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"enum\":[\"pending\",\"approved\",\"rejected\"]},\"reviewNote\":{\"type\":\"string\"},\"reviewedBy\":{\"type\":[\"integer\",\"null\"]},\"reviewedAt\":{\"type\":[\"string\",\"null\"]},\"createdAt\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/account-requests/{{requestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "account-requests",
+                "{{requestId}}"
+              ]
+            },
+            "description": "Read one request"
+          }
+        },
+        {
+          "name": "Approve account request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches ApproveResponse schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"request\",\"user\"],\"properties\":{\"request\":{\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"message\",\"status\",\"reviewNote\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"enum\":[\"pending\",\"approved\",\"rejected\"]},\"reviewNote\":{\"type\":\"string\"},\"reviewedBy\":{\"type\":[\"integer\",\"null\"]},\"reviewedAt\":{\"type\":[\"string\",\"null\"]},\"createdAt\":{\"type\":\"string\"}}},\"user\":{\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"role\",\"status\",\"twoFactorEnabled\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\",\"maxLength\":80},\"role\":{\"type\":\"string\",\"enum\":[\"user\",\"admin\"]},\"status\":{\"type\":\"string\",\"enum\":[\"active\",\"disabled\"]},\"twoFactorEnabled\":{\"type\":\"boolean\"},\"createdAt\":{\"type\":\"string\"}}}}}))",
+                  "pm.environment.set('userId', pm.response.json().user.id)"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"user\",\n  \"note\": \"Welcome!\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/account-requests/{{requestId}}/approve",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "account-requests",
+                "{{requestId}}",
+                "approve"
+              ]
+            },
+            "description": "Approve and create the user"
+          }
+        },
+        {
+          "name": "Reject account request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200))",
+                  "pm.test('Matches AccountRequest schema', () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"id\",\"email\",\"displayName\",\"message\",\"status\",\"reviewNote\",\"createdAt\"],\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1},\"email\":{\"type\":\"string\",\"format\":\"email\",\"maxLength\":254},\"displayName\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"},\"status\":{\"type\":\"string\",\"enum\":[\"pending\",\"approved\",\"rejected\"]},\"reviewNote\":{\"type\":\"string\"},\"reviewedBy\":{\"type\":[\"integer\",\"null\"]},\"reviewedAt\":{\"type\":[\"string\",\"null\"]},\"createdAt\":{\"type\":\"string\"}}}))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note\": \"Not eligible.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/admin/account-requests/{{requestId}}/reject",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "account-requests",
+                "{{requestId}}",
+                "reject"
+              ]
+            },
+            "description": "Reject a request"
+          }
+        },
+        {
+          "name": "Delete account request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status is 204', () => pm.response.to.have.status(204))"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-CSRF-Token",
+                "value": "{{csrfToken}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/admin/account-requests/{{requestId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "admin",
+                "account-requests",
+                "{{requestId}}"
+              ]
+            },
+            "description": "Delete a request record"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -31,6 +31,26 @@ Vite serves the site on port `5173` and proxies `/api` to the Express API on por
 - Pick the generated frame or reuse a thumbnail from the creator's library. Add a title (up to 140 characters) and description (up to 1,200 characters).
 - Uploaded projects are published to the homepage gallery and have their own watch/detail pages. Video playback supports HTTP byte-range requests for seeking.
 
+## Accounts API and Postman
+
+Sign-up requests, log in, password reset, self-service account management, and admin management of users and account requests live in [server/accounts.js](server/accounts.js). The contract is in [docs/api/openapi.json](docs/api/openapi.json) (OpenAPI 3.1 with JSON schemas).
+
+1. Run `npm run dev` (API on `http://localhost:3001`).
+2. In Postman, import [postman/accounts-api.postman_collection.json](postman/accounts-api.postman_collection.json) and [postman/local.postman_environment.json](postman/local.postman_environment.json), then select the **Frame by Frame - Local** environment. (Or import the OpenAPI file directly.)
+3. Run the folders in order. After **Log in** and **Send email code**, copy the 6-digit code from the API console into the `otpCode` variable and run **Verify email code**. Without SMTP configured, codes and password-reset tokens are printed to the API console in development only.
+
+The first user (and any user made with `npm run create-user`) is an administrator. Admin routes require role `admin`, a completed 2FA session, and the `X-CSRF-Token` header on writes (saved automatically by the collection).
+
+### CLI Testing and Postman Cloud Sync
+
+- `npm run test:api`: Runs the full automated end-to-end API lifecycle test suite across all CRUD routes (spawns the server automatically if needed).
+- `npm run postman:run`: Executes Newman CLI against the collection.
+- `npm run postman:sync -- --api-key <POSTMAN_API_KEY>`: Pushes and syncs the collection and environment directly to your Postman Cloud workspace via CLI.
+- Official Postman CLI:
+  ```sh
+  postman collection run postman/accounts-api.postman_collection.json -e postman/local.postman_environment.json
+  ```
+
 ## Security and storage
 
 - Passwords use Node scrypt with per-user salts. Email 2FA codes are HMAC-hashed at rest, expire after 10 minutes, and allow at most five attempts.
