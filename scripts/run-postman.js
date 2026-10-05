@@ -10,6 +10,16 @@ const environmentPath = resolve(root, 'postman/local.postman_environment.json')
 
 const collection = JSON.parse(readFileSync(collectionPath, 'utf8'))
 const environment = JSON.parse(readFileSync(environmentPath, 'utf8'))
+const demoEmail = process.env.PORTAL_DEMO_EMAIL
+const demoPassword = process.env.PORTAL_DEMO_PASSWORD
+if (!demoEmail || !demoPassword) {
+  console.error('Set PORTAL_DEMO_EMAIL and PORTAL_DEMO_PASSWORD before running Postman tests.')
+  process.exit(1)
+}
+for (const entry of environment.values) {
+  if (entry.key === 'email') entry.value = demoEmail
+  if (entry.key === 'password') entry.value = demoPassword
+}
 
 const args = process.argv.slice(2)
 const folderArgIndex = args.indexOf('--folder')
@@ -150,7 +160,7 @@ async function main() {
       const res = await fetch(`${baseUrl}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'admin@example.com', password: 'REDACTED' }),
+        body: JSON.stringify({ email: demoEmail, password: demoPassword }),
       })
       if (res.status !== 200) throw new Error(`HTTP ${res.status}`)
       cookie = res.headers.get('set-cookie') || ''
@@ -178,7 +188,7 @@ async function main() {
       const { database } = await import('../server/database.js')
       const { sessionSecret } = await import('../server/security.js')
       const { createHmac } = await import('node:crypto')
-      const admin = database.prepare('SELECT id, email_otp_hash FROM users WHERE email = ?').get('admin@example.com')
+      const admin = database.prepare('SELECT id, email_otp_hash FROM users WHERE email = ?').get(demoEmail)
       if (admin?.email_otp_hash) {
         for (let i = 0; i < 1_000_000; i++) {
           const code = String(i).padStart(6, '0')
@@ -377,7 +387,7 @@ async function main() {
       })
       if (res.status !== 200) throw new Error(`HTTP ${res.status}`)
       const body = await res.json()
-      if (body.email !== 'admin@example.com') throw new Error('Unexpected user payload')
+      if (body.email !== demoEmail) throw new Error('Unexpected user payload')
     })
 
     // 18. Self-Service My Account - Update

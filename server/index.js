@@ -719,8 +719,12 @@ app.use((error, req, res, next) => {
 
 async function seedDevelopmentDemoOwner() {
   if (!(process.argv.includes('--demo') || process.env.SEED_DEMO_OWNER === 'true') || database.prepare('SELECT COUNT(*) AS count FROM users').get().count > 0) return
-  const email = process.env.PORTAL_DEMO_EMAIL || 'admin@example.com'
-  const password = process.env.PORTAL_DEMO_PASSWORD || 'REDACTED'
+  const email = process.env.PORTAL_DEMO_EMAIL
+  const password = process.env.PORTAL_DEMO_PASSWORD
+  if (!email || !password) {
+    console.warn('Demo owner not seeded: set PORTAL_DEMO_EMAIL and PORTAL_DEMO_PASSWORD.')
+    return
+  }
   const credentials = await hashPassword(password)
   const result = database.prepare("INSERT INTO users (email, password_salt, password_hash, role) VALUES (?, ?, ?, 'admin')")
     .run(email, credentials.salt, credentials.hash)

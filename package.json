@@ -12,8 +12,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "start": "node --env-file-if-exists=.env server/index.js",
-    "test:api": "node scripts/run-postman.js",
-    "postman:run": "node scripts/run-postman.js --newman",
+    "test:api": "node --env-file-if-exists=.env scripts/run-postman.js",
+    "postman:run": "node --env-file-if-exists=.env scripts/run-postman.js --newman",
     "postman:sync": "node scripts/sync-postman.js"
   },
   "dependencies": {
