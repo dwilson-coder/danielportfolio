@@ -53,3 +53,5 @@ body{background:#171916;color:#eeeee8}
 .share-count.over { color: #c0392b; opacity: 1; }
 .share-thumb { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .share-thumb img { width: 160px; border-radius: 8px; aspect-ratio: 16/9; object-fit: cover; }
+
+.uploaded-by{margin:10px 0 0;color:var(--ink);font-size:15px}.uploaded-by strong{font-weight:700}
