@@ -42,3 +42,14 @@ body{background:#171916;color:#eeeee8}
 .portrait-frame:hover,.portrait-frame:focus-within{box-shadow:3px 3px 0 #fd694f}
 .film-image-wrap{border:1px solid transparent;border-radius:0;transition:border-color .2s}
 .film-card:hover .film-image-wrap,.film-card:focus-visible .film-image-wrap{border-color:var(--orange)}
+.share-panel { margin: 32px 0; }
+.share-body { margin-top: 16px; padding: 20px; border: 1px solid currentColor; border-radius: 12px; display: grid; gap: 14px; max-width: 720px; }
+.share-platforms, .share-lengths, .share-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.share-platforms button, .share-lengths button { padding: 8px 14px; border: 1px solid currentColor; border-radius: 999px; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.share-platforms button.active, .share-lengths button.active { background: #111; color: #fff; }
+.share-lengths span { font-size: 12px; letter-spacing: .1em; }
+.share-body textarea { width: 100%; padding: 12px; font: inherit; border: 1px solid currentColor; border-radius: 8px; resize: vertical; background: transparent; color: inherit; box-sizing: border-box; }
+.share-count, .share-note { margin: 0; font-size: 13px; opacity: .8; }
+.share-count.over { color: #c0392b; opacity: 1; }
+.share-thumb { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.share-thumb img { width: 160px; border-radius: 8px; aspect-ratio: 16/9; object-fit: cover; }
