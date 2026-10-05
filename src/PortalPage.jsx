@@ -80,12 +80,7 @@ function formatDuration(seconds) {
 function AuthForm({ busy, error, notice, onForgot, onSubmit }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  function useDemoCredentials() {
-    setEmail('admin@example.com')
-    setPassword('REDACTED')
-  }
   return <form className="portal-form" onSubmit={(event) => { event.preventDefault(); onSubmit({ email, password }) }}>
-    {import.meta.env.DEV && <aside className="demo-credentials"><div><span>LOCAL DEMO SIGN-IN</span><strong>admin@example.com</strong><strong>REDACTED</strong></div><button type="button" onClick={useDemoCredentials}>Fill demo credentials</button></aside>}
     <label>Email address<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required /></label>
     <label>Password<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} maxLength={256} required /></label>
     {error && <p className="portal-error" role="alert">{error}</p>}
