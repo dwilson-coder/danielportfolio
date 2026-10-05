@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: danielportfolio-api
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 22
+      - key: TRUST_PROXY
+        value: "1"
+      - key: SEED_DEMO_OWNER
+        value: "true"
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: PORTAL_RECOVERY_CODE
+        generateValue: true

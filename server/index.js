@@ -622,7 +622,7 @@ app.use((error, req, res, next) => {
 })
 
 async function seedDevelopmentDemoOwner() {
-  if (!process.argv.includes('--demo') || database.prepare('SELECT COUNT(*) AS count FROM users').get().count > 0) return
+  if (!(process.argv.includes('--demo') || process.env.SEED_DEMO_OWNER === 'true') || database.prepare('SELECT COUNT(*) AS count FROM users').get().count > 0) return
   const email = process.env.PORTAL_DEMO_EMAIL || 'admin@example.com'
   const password = process.env.PORTAL_DEMO_PASSWORD || 'REDACTED'
   const credentials = await hashPassword(password)

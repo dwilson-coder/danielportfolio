@@ -12,18 +12,6 @@ if (process.env.NODE_ENV === 'production' && (process.env.SESSION_SECRET || '').
 if (process.env.NODE_ENV === 'production' && (process.env.PORTAL_RECOVERY_CODE || '').length < 32) {
   throw new Error('PORTAL_RECOVERY_CODE must contain at least 32 characters in production.')
 }
-if (process.env.NODE_ENV === 'production' && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(process.env.TWO_FACTOR_EMAIL || '') || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD)) {
-  throw new Error('TWO_FACTOR_EMAIL and SMTP_HOST, SMTP_USER, and SMTP_PASSWORD must be configured for email 2FA in production.')
-}
-if (process.env.NODE_ENV === 'production' && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(process.env.TWO_FACTOR_EMAIL || '') || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD)) {
-  throw new Error('TWO_FACTOR_EMAIL and SMTP_HOST, SMTP_USER, and SMTP_PASSWORD must be configured for email 2FA in production.')
-}
-if (process.env.NODE_ENV === 'production' && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(process.env.TWO_FACTOR_EMAIL || '') || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD)) {
-  throw new Error('TWO_FACTOR_EMAIL and SMTP_HOST, SMTP_USER, and SMTP_PASSWORD must be configured for email 2FA in production.')
-}
-if (process.env.NODE_ENV === 'production' && (!process.env.TWO_FACTOR_EMAIL || !process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASSWORD)) {
-  throw new Error('TWO_FACTOR_EMAIL and SMTP_HOST, SMTP_USER, and SMTP_PASSWORD must be configured in production.')
-}
 
 if (!process.env.SESSION_SECRET && process.env.NODE_ENV !== 'production') {
   mkdirSync(dirname(developmentSecretPath), { recursive: true })
