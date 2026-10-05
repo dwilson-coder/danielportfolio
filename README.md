@@ -21,7 +21,7 @@ npm install
 npm run dev
 ```
 
-On an empty local development database, `npm run dev` seeds the demo admin: `admin@example.com` / `REDACTED`. These credentials are development-only and are not created in production. Sign in at `http://localhost:5173/admin`; a six-digit 2FA code is sent to `TWO_FACTOR_EMAIL` after SMTP is configured. New accounts cannot be created in the browser. Create the production owner with `npm run create-user -- owner@example.com`; it generates a random password. The **Forgot your password?** flow requires the private recovery code from `.env`; no password-reset email service is configured.
+On an empty local development database, `npm run dev` seeds the demo admin: a demo admin (set `PORTAL_DEMO_PASSWORD` in `.env`). These credentials are development-only and are not created in production. Sign in at `http://localhost:5173/admin`; a six-digit 2FA code is sent to `TWO_FACTOR_EMAIL` after SMTP is configured. New accounts cannot be created in the browser. Create the production owner with `npm run create-user -- owner@example.com`; it generates a random password. The **Forgot your password?** flow requires the private recovery code from `.env`; no password-reset email service is configured.
 
 Vite serves the site on port `5173` and proxies `/api` to the Express API on port `3001`.
 
