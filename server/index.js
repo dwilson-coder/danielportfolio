@@ -171,6 +171,45 @@ function profileForUser(userId) {
   }
 }
 
+// Profile text is mirrored to a private GitHub Gist so it survives Render's ephemeral disk.
+const gistConfig = () => process.env.PROFILE_GIST_ID && process.env.PROFILE_GIST_TOKEN
+  ? { url: `https://api.github.com/gists/${process.env.PROFILE_GIST_ID}`, headers: { Authorization: `Bearer ${process.env.PROFILE_GIST_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'portfolio-api' } }
+  : null
+
+function saveProfileBackup(userId) {
+  const config = gistConfig()
+  if (!config) return
+  const { displayName, location, bio, tags } = profileForUser(userId)
+  fetch(config.url, {
+    method: 'PATCH',
+    headers: { ...config.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files: { 'profile.json': { content: JSON.stringify({ displayName, location, bio, tags }, null, 2) } } }),
+  }).then((response) => { if (!response.ok) console.error('Profile backup failed:', response.status) })
+    .catch((error) => console.error('Profile backup failed:', error.message))
+}
+
+async function restoreProfileBackup() {
+  const config = gistConfig()
+  const owner = config && publicProfileOwner()
+  if (!owner) return
+  try {
+    const response = await fetch(config.url, { headers: config.headers })
+    if (!response.ok) throw new Error(`status ${response.status}`)
+    const content = (await response.json()).files?.['profile.json']?.content
+    if (!content) return
+    const saved = JSON.parse(content)
+    if (typeof saved.displayName !== 'string' || !Array.isArray(saved.tags)) return
+    database.prepare(`
+      INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name, location = excluded.location,
+        bio = excluded.bio, tags_json = excluded.tags_json, updated_at = CURRENT_TIMESTAMP
+    `).run(owner.id, saved.displayName, saved.location || '', saved.bio || '', JSON.stringify(saved.tags))
+    console.log('Profile restored from backup.')
+  } catch (error) {
+    console.error('Profile restore failed:', error.message)
+  }
+}
+
 function publicProfileOwner() {
   return database.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get()
 }
@@ -292,6 +331,7 @@ router.put('/profile', loadSession, requireCsrf, requireTwoFactor, (req, res) =>
       tags_json = excluded.tags_json,
       updated_at = CURRENT_TIMESTAMP
   `).run(req.session.user_id, displayName, location, bio, JSON.stringify(tags.map((tag) => tag.trim())))
+  saveProfileBackup(req.session.user_id)
   return res.json(profileForUser(req.session.user_id))
 })
 
@@ -690,6 +730,7 @@ async function seedDevelopmentDemoOwner() {
 }
 
 await seedDevelopmentDemoOwner()
+await restoreProfileBackup()
 
 const port = Number(process.env.PORT || 3001)
 const host = process.env.HOST || '0.0.0.0'
