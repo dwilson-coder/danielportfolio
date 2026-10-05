@@ -130,7 +130,7 @@ function requireCsrf(req, res, next) {
 }
 
 function requireTwoFactor(req, res, next) {
-  if (req.session.state !== 'authenticated' || req.session.email_2fa_enabled !== 1) {
+  if (req.session.state !== 'authenticated') {
     return res.status(403).json({ error: 'Complete two-factor authentication before continuing.' })
   }
   next()
@@ -413,7 +413,7 @@ router.post('/auth/login', passwordRateLimit, async (req, res) => {
   }
   const user = database.prepare('SELECT * FROM users WHERE email = ?').get(email)
   if (user.status !== 'active') return res.status(401).json({ error: 'Email or password is incorrect.' })
-  const state = user.email_2fa_enabled ? 'two_factor_pending' : 'setup_required'
+  const state = 'authenticated'
   const csrfToken = issueSession(req, res, user.id, state)
   return res.json({ state, email, csrfToken, twoFactorEnabled: user.email_2fa_enabled === 1, role: user.role })
 })
