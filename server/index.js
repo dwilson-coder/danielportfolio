@@ -498,6 +498,19 @@ router.get('/videos/thumbnails', loadSession, requireTwoFactor, (req, res) => {
   return res.json({ thumbnails })
 })
 
+router.get('/videos/export', loadSession, requireTwoFactor, (req, res) => {
+  const videos = database.prepare(`
+    SELECT id, title, description, original_name, mime_type, duration_seconds, size_bytes, created_at
+    FROM videos WHERE user_id = ? ORDER BY created_at DESC
+  `).all(req.session.user_id).map((video) => ({
+    ...video,
+    fileUrl: `/api/videos/${video.id}/file`,
+    thumbnailUrl: `/api/videos/${video.id}/thumbnail`,
+  }))
+  res.setHeader('Content-Disposition', 'attachment; filename="video-details.json"')
+  return res.json({ exportedAt: new Date().toISOString(), count: videos.length, videos })
+})
+
 router.get('/videos/:id/file', loadSession, requireTwoFactor, (req, res) => {
   const video = database.prepare('SELECT video_path, mime_type, original_name FROM videos WHERE id = ? AND user_id = ?')
     .get(req.params.id, req.session.user_id)
