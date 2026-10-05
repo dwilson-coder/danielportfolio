@@ -54,4 +54,4 @@ body{background:#171916;color:#eeeee8}
 .share-thumb { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .share-thumb img { width: 160px; border-radius: 8px; aspect-ratio: 16/9; object-fit: cover; }
 
-.uploaded-by{margin:10px 0 0;color:var(--ink);font-size:15px}.uploaded-by strong{font-weight:700}
+.uploaded-by{margin:10px 0 0;color:var(--ink);font-size:15px}.uploaded-by strong{font-weight:700}.original-file-name{margin:8px 0 0;color:var(--soft-ink);font-size:11px;overflow-wrap:anywhere}.original-file-name span{margin-right:6px;color:#797970;font-size:8px;font-weight:700;letter-spacing:.12em}
