@@ -548,7 +548,46 @@ router.get('/videos/:id/thumbnail', loadSession, requireTwoFactor, (req, res) =>
   return createReadStream(video.thumbnail_path).pipe(res)
 })
 
-router.post('/videos', loadSession, requireCsrf, requireTwoFactor, uploadRateLimit, (req, res, next) => {
+// Short-lived single-use tokens let the browser upload straight to this API,
+// bypassing the Netlify proxy's request-size limit without cross-site cookies.
+const uploadTokens = new Map()
+const uploadOrigins = (process.env.UPLOAD_ALLOWED_ORIGINS || 'https://danielwilsonportfolio.netlify.app').split(',').map((origin) => origin.trim()).filter(Boolean)
+
+function uploadCors(req, res, next) {
+  const origin = req.get('Origin')
+  if (origin && uploadOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Vary', 'Origin')
+    res.setHeader('Access-Control-Allow-Headers', 'X-Upload-Token, Content-Type')
+    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin')
+  }
+  if (req.method === 'OPTIONS') return res.status(204).end()
+  next()
+}
+
+function loadUploadToken(req, res, next) {
+  const token = req.get('X-Upload-Token') || ''
+  const entry = uploadTokens.get(token)
+  uploadTokens.delete(token)
+  if (!entry || entry.expires < Date.now()) return res.status(401).json({ error: 'Upload authorization expired. Try again.' })
+  const session = database.prepare(`
+    SELECT users.id AS user_id, users.email, users.email_2fa_enabled, users.role, 'authenticated' AS state
+    FROM users WHERE users.id = ? AND users.status = 'active'
+  `).get(entry.userId)
+  if (!session) return res.status(401).json({ error: 'Upload authorization expired. Try again.' })
+  req.session = session
+  next()
+}
+
+router.post('/videos/upload-token', loadSession, requireCsrf, requireTwoFactor, (req, res) => {
+  for (const [key, value] of uploadTokens) if (value.expires < Date.now()) uploadTokens.delete(key)
+  const token = randomBytes(32).toString('base64url')
+  uploadTokens.set(token, { userId: req.session.user_id, expires: Date.now() + 5 * 60 * 1000 })
+  return res.json({ token })
+})
+
+const handleUpload = [uploadRateLimit, (req, res, next) => {
   upload(req, res, (error) => error ? next(error) : next())
 }, async (req, res) => {
   const videoFile = req.files?.video?.[0]
@@ -600,7 +639,11 @@ router.post('/videos', loadSession, requireCsrf, requireTwoFactor, uploadRateLim
   return res.status(201).json({
     video: { id, title, description, originalName, mimeType: detectedVideo.mime, durationSeconds: duration, videoUrl: `/api/videos/${id}/file`, thumbnailUrl: `/api/videos/${id}/thumbnail` },
   })
-})
+}]
+
+router.post('/videos', loadSession, requireCsrf, requireTwoFactor, ...handleUpload)
+router.options('/videos/direct', uploadCors)
+router.post('/videos/direct', uploadCors, loadUploadToken, ...handleUpload)
 
 router.use(createAccountsRouter({
   loadSession,

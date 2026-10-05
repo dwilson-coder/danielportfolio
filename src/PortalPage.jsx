@@ -24,6 +24,18 @@ async function api(path, { method = 'GET', data, csrfToken, signal } = {}) {
   return result
 }
 
+const uploadBase = (import.meta.env.VITE_UPLOAD_API_BASE || '').replace(/\/$/, '')
+
+// Uploads go straight to the API origin when configured, avoiding the Netlify proxy's body limit.
+async function directUpload(form, csrfToken) {
+  if (!uploadBase) return api('/videos', { method: 'POST', data: form, csrfToken })
+  const { token } = await api('/videos/upload-token', { method: 'POST', csrfToken })
+  const response = await fetch(`${uploadBase}/api/videos/direct`, { method: 'POST', headers: { 'X-Upload-Token': token }, body: form })
+  const result = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(result.error || 'The upload could not be completed.')
+  return result
+}
+
 function makeThumbnail(file) {
   const source = URL.createObjectURL(file)
   const video = document.createElement('video')
@@ -355,7 +367,7 @@ function PortalPage() {
         thumbnailBlob = await response.blob()
       }
       form.append('thumbnail', thumbnailBlob, 'thumbnail.jpg')
-      await api('/videos', { method: 'POST', data: form, csrfToken: session.csrfToken })
+      await directUpload(form, session.csrfToken)
       const [videoResult, thumbnailResult] = await Promise.all([api('/videos'), api('/videos/thumbnails')])
       setVideos(videoResult.videos)
       setThumbnailLibrary(thumbnailResult.thumbnails)
