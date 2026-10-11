@@ -189,10 +189,10 @@ async function main() {
     // Wait 200ms for OTP capture or query DB
     await new Promise((r) => setTimeout(r, 200))
     if (!otpCode) {
-      const { database } = await import('../server/database.js')
+      const { db } = await import('../server/database.js')
       const { sessionSecret } = await import('../server/security.js')
       const { createHmac } = await import('node:crypto')
-      const admin = database.prepare('SELECT id, email_otp_hash FROM users WHERE email = ?').get(demoEmail)
+      const admin = await db.get('SELECT id, email_otp_hash FROM users WHERE email = ?', demoEmail)
       if (admin?.email_otp_hash) {
         for (let i = 0; i < 1_000_000; i++) {
           const code = String(i).padStart(6, '0')
@@ -359,14 +359,14 @@ async function main() {
     // Wait 200ms for token
     await new Promise((r) => setTimeout(r, 200))
     if (!resetToken) {
-      const { database } = await import('../server/database.js')
-      const tokenRec = database.prepare('SELECT token_hash FROM password_reset_tokens WHERE user_id = ?').get(approvedUserId)
+      const { db } = await import('../server/database.js')
+      const tokenRec = await db.get('SELECT token_hash FROM password_reset_tokens WHERE user_id = ?', approvedUserId)
       if (tokenRec) {
         // Create an explicit known token to confirm with
         const { randomBytes } = await import('node:crypto')
         const { hashToken } = await import('../server/security.js')
         const rawToken = randomBytes(32).toString('base64url')
-        database.prepare('UPDATE password_reset_tokens SET token_hash = ? WHERE user_id = ?').run(hashToken(rawToken), approvedUserId)
+        await db.run('UPDATE password_reset_tokens SET token_hash = ? WHERE user_id = ?', hashToken(rawToken), approvedUserId)
         resetToken = rawToken
       }
     }

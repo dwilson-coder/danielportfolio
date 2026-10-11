@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { database } from './database.js'
+import { db } from './database.js'
 import { hashPassword } from './security.js'
 
 const email = (process.argv[2] || '').trim().toLowerCase()
@@ -14,17 +14,15 @@ if (requestedPassword && (requestedPassword.length < 8 || requestedPassword.leng
   throw new Error('Development passwords must be between 8 and 256 characters.')
 }
 
-if (database.prepare('SELECT COUNT(*) AS count FROM users').get().count > 0) {
+if ((await db.get('SELECT COUNT(*) AS count FROM users')).count > 0) {
   throw new Error('A creator account already exists. Use the configured password-recovery code to reset it.')
 }
 
 const password = requestedPassword || randomBytes(24).toString('base64url')
 const credentials = await hashPassword(password)
-const result = database.prepare("INSERT INTO users (email, password_salt, password_hash, role) VALUES (?, ?, ?, 'admin')")
-  .run(email, credentials.salt, credentials.hash)
-database.prepare('INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)')
-  .run(Number(result.lastInsertRowid), process.env.VITE_CREATOR_NAME || 'Daniel Wilson', process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', process.env.VITE_CREATOR_BIO || '', JSON.stringify(['Filmmaking', 'Motion design', 'Editing']))
+const result = await db.run("INSERT INTO users (email, password_salt, password_hash, role) VALUES (?, ?, ?, 'admin')", email, credentials.salt, credentials.hash)
+await db.run('INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)', Number(result.lastInsertRowid), process.env.VITE_CREATOR_NAME || 'Daniel Wilson', process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', process.env.VITE_CREATOR_BIO || '', JSON.stringify(['Filmmaking', 'Motion design', 'Editing']))
 
 console.log(`Creator account: ${email}`)
 console.log(requestedPassword ? 'Development demo password configured.' : `One-time generated password: ${password}`)
-console.log('Save this password securely. Email two-factor verification is required on first sign-in.')
+console.log('Save this password securely.')

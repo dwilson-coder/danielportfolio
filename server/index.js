@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createReadStream, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, extname, join, resolve } from 'node:path'
@@ -10,7 +10,7 @@ import helmet from 'helmet'
 import multer from 'multer'
 import nodemailer from 'nodemailer'
 import { createAccountsRouter } from './accounts.js'
-import { database } from './database.js'
+import { db } from './database.js'
 import { constantTimeMatch, createEmailOtp, hashPassword, hashToken, verifyEmailOtp, verifyPassword } from './security.js'
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -47,12 +47,13 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       baseUri: ["'self'"],
-      connectSrc: ["'self'"],
+      connectSrc: ["'self'", 'https://api.cloudinary.com'],
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       formAction: ["'self'"],
       frameAncestors: ["'none'"],
-      imgSrc: ["'self'", 'data:', 'blob:', 'https://images.unsplash.com'],
-      mediaSrc: ["'self'", 'https://media.w3.org', 'https://interactive-examples.mdn.mozilla.net'],
+      frameSrc: ['https://www.youtube-nocookie.com', 'https://www.youtube.com'],
+      imgSrc: ["'self'", 'data:', 'blob:', 'https://images.unsplash.com', 'https://res.cloudinary.com', 'https://i.ytimg.com'],
+      mediaSrc: ["'self'", 'blob:', 'https://media.w3.org', 'https://interactive-examples.mdn.mozilla.net', 'https://res.cloudinary.com'],
       objectSrc: ["'none'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
@@ -79,6 +80,67 @@ const mailTransport = process.env.SMTP_HOST && process.env.SMTP_USER && process.
     auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASSWORD },
   })
   : null
+
+// ---- Cloudinary (permanent storage for uploaded videos, thumbnails and profile images) ----
+// Configure with CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>, or the three
+// CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET variables.
+function cloudinaryConfig() {
+  let cloudName = process.env.CLOUDINARY_CLOUD_NAME
+  let apiKey = process.env.CLOUDINARY_API_KEY
+  let apiSecret = process.env.CLOUDINARY_API_SECRET
+  if (process.env.CLOUDINARY_URL) {
+    try {
+      const url = new URL(process.env.CLOUDINARY_URL)
+      cloudName ||= url.hostname
+      apiKey ||= decodeURIComponent(url.username)
+      apiSecret ||= decodeURIComponent(url.password)
+    } catch {
+      console.error('CLOUDINARY_URL is not a valid cloudinary:// URL.')
+    }
+  }
+  if (!cloudName || !apiKey || !apiSecret) return null
+  return {
+    cloudName,
+    apiKey,
+    apiSecret,
+    folder: (process.env.CLOUDINARY_FOLDER || 'portfolio').replace(/^\/+|\/+$/g, ''),
+    // Cloudinary's free plan caps videos at 100 MB and images at 10 MB per file.
+    maxVideoBytes: Number(process.env.CLOUDINARY_MAX_VIDEO_MB || 100) * 1024 * 1024,
+    maxImageBytes: 10 * 1024 * 1024,
+  }
+}
+
+const cloudinary = cloudinaryConfig()
+
+function cloudinarySignature(params) {
+  const toSign = Object.keys(params).sort().map((key) => `${key}=${params[key]}`).join('&')
+  return createHash('sha1').update(toSign + cloudinary.apiSecret).digest('hex')
+}
+
+// Checks the signature Cloudinary returns with every upload, so only files that really were
+// uploaded to this account (and in this site's folder) can be saved.
+function verifiedCloudinaryAsset(asset, resourceType) {
+  if (!cloudinary || !asset || typeof asset !== 'object') return null
+  const { public_id: publicId, version, signature, secure_url: url } = asset
+  if (typeof publicId !== 'string' || typeof signature !== 'string' || typeof url !== 'string' || !['string', 'number'].includes(typeof version)) return null
+  if (!publicId.startsWith(`${cloudinary.folder}/`)) return null
+  const expected = createHash('sha1').update(`public_id=${publicId}&version=${version}${cloudinary.apiSecret}`).digest('hex')
+  if (!constantTimeMatch(signature, expected)) return null
+  if (!url.startsWith(`https://res.cloudinary.com/${cloudinary.cloudName}/${resourceType}/upload/`)) return null
+  return { publicId, url, format: typeof asset.format === 'string' ? asset.format : '', bytes: Number(asset.bytes) || 0 }
+}
+
+async function destroyCloudinaryAsset(publicId, resourceType) {
+  if (!cloudinary || !publicId) return
+  const params = { public_id: publicId, timestamp: Math.floor(Date.now() / 1000) }
+  const body = new URLSearchParams({ ...params, api_key: cloudinary.apiKey, signature: cloudinarySignature(params) })
+  try {
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${cloudinary.cloudName}/${resourceType}/destroy`, { method: 'POST', body })
+    if (!response.ok) console.error('Cloudinary delete failed:', response.status)
+  } catch (error) {
+    console.error('Cloudinary delete failed:', error.message)
+  }
+}
 
 function maskEmail(email) {
   const [localPart, domain] = email.split('@')
@@ -107,15 +169,15 @@ function clearSessionCookie(res) {
   res.setHeader('Set-Cookie', `${sessionCookie}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`)
 }
 
-function loadSession(req, res, next) {
+async function loadSession(req, res, next) {
   const token = readCookie(req, sessionCookie)
   if (!token) return res.status(401).json({ error: 'Sign in to continue.' })
-  const session = database.prepare(`
+  const session = await db.get(`
     SELECT sessions.token_hash, sessions.csrf_token, sessions.user_id, sessions.state, sessions.expires_at,
       users.email, users.email_2fa_enabled, users.role
     FROM sessions JOIN users ON users.id = sessions.user_id
     WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.status = 'active'
-  `).get(hashToken(token), Date.now())
+  `, hashToken(token), Date.now())
   if (!session) {
     clearSessionCookie(res)
     return res.status(401).json({ error: 'Your session expired. Please sign in again.' })
@@ -138,13 +200,12 @@ function requireTwoFactor(req, res, next) {
   next()
 }
 
-function issueSession(req, res, userId, state) {
+async function issueSession(req, res, userId, state) {
   const previousToken = readCookie(req, sessionCookie)
-  if (previousToken) database.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hashToken(previousToken))
+  if (previousToken) await db.run('DELETE FROM sessions WHERE token_hash = ?', hashToken(previousToken))
   const token = randomBytes(32).toString('base64url')
   const csrfToken = randomBytes(24).toString('base64url')
-  database.prepare('INSERT INTO sessions (token_hash, csrf_token, user_id, state, expires_at) VALUES (?, ?, ?, ?, ?)')
-    .run(hashToken(token), csrfToken, userId, state, Date.now() + sessionLifetime)
+  await db.run('INSERT INTO sessions (token_hash, csrf_token, user_id, state, expires_at) VALUES (?, ?, ?, ?, ?)', hashToken(token), csrfToken, userId, state, Date.now() + sessionLifetime)
   setSessionCookie(res, token)
   return csrfToken
 }
@@ -159,8 +220,8 @@ function sessionPayload(session) {
   }
 }
 
-function profileForUser(userId) {
-  const profile = database.prepare('SELECT * FROM creator_profiles WHERE user_id = ?').get(userId)
+async function profileForUser(userId) {
+  const profile = await db.get('SELECT * FROM creator_profiles WHERE user_id = ?', userId)
   let tags = []
   try { tags = JSON.parse(profile?.tags_json || '[]') } catch { tags = [] }
   return {
@@ -168,20 +229,20 @@ function profileForUser(userId) {
     location: profile?.location || process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA',
     bio: profile?.bio || process.env.VITE_CREATOR_BIO || 'Independent filmmaker and motion designer, drawn to small details and big feelings.',
     tags: profile ? (Array.isArray(tags) ? tags : []) : ['Filmmaking', 'Motion design', 'Editing'],
-    imageUrl: profile?.image_path ? `/api/public/profile/image?v=${encodeURIComponent(profile.updated_at)}` : '/ninja.svg',
+    imageUrl: profile?.image_url || (profile?.image_path ? `/api/public/profile/image?v=${encodeURIComponent(profile.updated_at)}` : '/ninja.svg'),
     updatedAt: profile?.updated_at || null,
   }
 }
 
-// Profile text is mirrored to a private GitHub Gist so it survives Render's ephemeral disk.
+// Optional: profile text is also mirrored to a private GitHub Gist as an extra backup.
 const gistConfig = () => process.env.PROFILE_GIST_ID && process.env.PROFILE_GIST_TOKEN
   ? { url: `https://api.github.com/gists/${process.env.PROFILE_GIST_ID}`, headers: { Authorization: `Bearer ${process.env.PROFILE_GIST_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'portfolio-api' } }
   : null
 
-function saveProfileBackup(userId) {
+async function saveProfileBackup(userId) {
   const config = gistConfig()
   if (!config) return
-  const { displayName, location, bio, tags } = profileForUser(userId)
+  const { displayName, location, bio, tags } = await profileForUser(userId)
   fetch(config.url, {
     method: 'PATCH',
     headers: { ...config.headers, 'Content-Type': 'application/json' },
@@ -192,7 +253,7 @@ function saveProfileBackup(userId) {
 
 async function restoreProfileBackup() {
   const config = gistConfig()
-  const owner = config && publicProfileOwner()
+  const owner = config && await publicProfileOwner()
   if (!owner) return
   try {
     const response = await fetch(config.url, { headers: config.headers })
@@ -201,19 +262,19 @@ async function restoreProfileBackup() {
     if (!content) return
     const saved = JSON.parse(content)
     if (typeof saved.displayName !== 'string' || !Array.isArray(saved.tags)) return
-    database.prepare(`
+    await db.run(`
       INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET display_name = excluded.display_name, location = excluded.location,
         bio = excluded.bio, tags_json = excluded.tags_json, updated_at = CURRENT_TIMESTAMP
-    `).run(owner.id, saved.displayName, saved.location || '', saved.bio || '', JSON.stringify(saved.tags))
+    `, owner.id, saved.displayName, saved.location || '', saved.bio || '', JSON.stringify(saved.tags))
     console.log('Profile restored from backup.')
   } catch (error) {
     console.error('Profile restore failed:', error.message)
   }
 }
 
-function publicProfileOwner() {
-  return database.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get()
+async function publicProfileOwner() {
+  return await db.get('SELECT id FROM users ORDER BY id LIMIT 1')
 }
 
 function isValidEmail(email) {
@@ -280,19 +341,18 @@ router.post('/auth/forgot-password', passwordRateLimit, async (req, res) => {
   if (!process.env.PORTAL_RECOVERY_CODE || !constantTimeMatch(recoveryCode, process.env.PORTAL_RECOVERY_CODE)) {
     return res.status(403).json({ error: 'Recovery code is invalid.' })
   }
-  const user = database.prepare('SELECT id FROM users WHERE email = ?').get(email)
+  const user = await db.get('SELECT id FROM users WHERE email = ?', email)
   if (user) {
     const credentials = await hashPassword(password)
-    database.prepare('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?')
-      .run(credentials.salt, credentials.hash, user.id)
-    database.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id)
+    await db.run('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?', credentials.salt, credentials.hash, user.id)
+    await db.run('DELETE FROM sessions WHERE user_id = ?', user.id)
   }
-  return res.json({ message: 'If that account exists, its password has been reset. Sign in and complete two-factor verification.' })
+  return res.json({ message: 'If that account exists, its password has been reset. Sign in to continue.' })
 })
 
-router.get('/public/profile', (req, res) => {
-  const owner = publicProfileOwner()
-  return res.json(owner ? profileForUser(owner.id) : {
+router.get('/public/profile', async (req, res) => {
+  const owner = await publicProfileOwner()
+  return res.json(owner ? await profileForUser(owner.id) : {
     displayName: defaultCreatorName,
     location: process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA',
     bio: process.env.VITE_CREATOR_BIO || 'Independent filmmaker and motion designer, drawn to small details and big feelings.',
@@ -301,18 +361,19 @@ router.get('/public/profile', (req, res) => {
   })
 })
 
-router.get('/public/profile/image', (req, res) => {
-  const owner = publicProfileOwner()
-  const profile = owner && database.prepare('SELECT image_path FROM creator_profiles WHERE user_id = ?').get(owner.id)
+router.get('/public/profile/image', async (req, res) => {
+  const owner = await publicProfileOwner()
+  const profile = owner && await db.get('SELECT image_path, image_url FROM creator_profiles WHERE user_id = ?', owner.id)
+  if (profile?.image_url) return res.redirect(302, profile.image_url)
   if (!profile?.image_path) return res.status(404).end()
   res.type(extname(profile.image_path))
   res.setHeader('Cache-Control', 'public, max-age=300')
   return createReadStream(profile.image_path).pipe(res)
 })
 
-router.get('/profile', loadSession, requireTwoFactor, (req, res) => res.json(profileForUser(req.session.user_id)))
+router.get('/profile', loadSession, requireTwoFactor, async (req, res) => res.json(await profileForUser(req.session.user_id)))
 
-router.put('/profile', loadSession, requireCsrf, requireTwoFactor, (req, res) => {
+router.put('/profile', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
   const displayName = typeof req.body.displayName === 'string' ? req.body.displayName.trim() : ''
   const location = typeof req.body.location === 'string' ? req.body.location.trim() : ''
   const bio = typeof req.body.bio === 'string' ? req.body.bio.trim() : ''
@@ -323,7 +384,7 @@ router.put('/profile', loadSession, requireCsrf, requireTwoFactor, (req, res) =>
   if (!tags || tags.length > 8 || tags.some((tag) => typeof tag !== 'string' || tag.trim().length < 1 || tag.trim().length > 24)) {
     return res.status(400).json({ error: 'Add up to 8 tags, each between 1 and 24 characters.' })
   }
-  database.prepare(`
+  await db.run(`
     INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT(user_id) DO UPDATE SET
@@ -332,12 +393,14 @@ router.put('/profile', loadSession, requireCsrf, requireTwoFactor, (req, res) =>
       bio = excluded.bio,
       tags_json = excluded.tags_json,
       updated_at = CURRENT_TIMESTAMP
-  `).run(req.session.user_id, displayName, location, bio, JSON.stringify(tags.map((tag) => tag.trim())))
-  saveProfileBackup(req.session.user_id)
-  return res.json(profileForUser(req.session.user_id))
+  `, req.session.user_id, displayName, location, bio, JSON.stringify(tags.map((tag) => tag.trim())))
+  saveProfileBackup(req.session.user_id).catch((error) => console.error('Profile backup failed:', error.message))
+  return res.json(await profileForUser(req.session.user_id))
 })
 
+// Local-disk profile image upload, used when Cloudinary isn't configured (local development).
 router.put('/profile/image', loadSession, requireCsrf, requireTwoFactor, (req, res, next) => {
+  if (cloudinary) return res.status(409).json({ error: 'Profile images are stored in Cloudinary. Refresh the page and try again.' })
   profileImageUpload(req, res, (error) => error ? next(error) : next())
 }, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Choose a profile image first.' })
@@ -350,16 +413,32 @@ router.put('/profile/image', loadSession, requireCsrf, requireTwoFactor, (req, r
     rmSync(req.file.path, { force: true })
     return res.status(415).json({ error: 'Choose a JPEG, PNG, or WebP profile image.' })
   }
-  const current = database.prepare('SELECT image_path FROM creator_profiles WHERE user_id = ?').get(req.session.user_id)
+  const current = await db.get('SELECT image_path, image_public_id FROM creator_profiles WHERE user_id = ?', req.session.user_id)
   const imagePath = join(profileImageDirectory, `${randomUUID()}.${imageType.ext}`)
   renameSync(req.file.path, imagePath)
-  database.prepare(`
+  await db.run(`
     INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json, image_path)
     VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id) DO UPDATE SET image_path = excluded.image_path, updated_at = CURRENT_TIMESTAMP
-  `).run(req.session.user_id, defaultCreatorName, process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', '', '[]', imagePath)
+    ON CONFLICT(user_id) DO UPDATE SET image_path = excluded.image_path, image_url = NULL, image_public_id = NULL, updated_at = CURRENT_TIMESTAMP
+  `, req.session.user_id, defaultCreatorName, process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', '', '[]', imagePath)
   if (current?.image_path) rmSync(current.image_path, { force: true })
-  return res.json(profileForUser(req.session.user_id))
+  return res.json(await profileForUser(req.session.user_id))
+})
+
+// Cloudinary profile image: the browser uploads to Cloudinary, then sends the signed result here.
+router.put('/profile/image/cloudinary', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
+  if (!cloudinary) return res.status(409).json({ error: 'Cloudinary storage is not configured.' })
+  const image = verifiedCloudinaryAsset(req.body.image, 'image')
+  if (!image) return res.status(400).json({ error: 'The uploaded image could not be verified. Try again.' })
+  const current = await db.get('SELECT image_path, image_public_id FROM creator_profiles WHERE user_id = ?', req.session.user_id)
+  await db.run(`
+    INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json, image_url, image_public_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET image_url = excluded.image_url, image_public_id = excluded.image_public_id, image_path = NULL, updated_at = CURRENT_TIMESTAMP
+  `, req.session.user_id, defaultCreatorName, process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', '', '[]', image.url, image.publicId)
+  if (current?.image_public_id && current.image_public_id !== image.publicId) void destroyCloudinaryAsset(current.image_public_id, 'image')
+  if (current?.image_path) rmSync(current.image_path, { force: true })
+  return res.json(await profileForUser(req.session.user_id))
 })
 
 function streamVideoRange(req, res, video) {
@@ -385,42 +464,73 @@ function streamVideoRange(req, res, video) {
   return createReadStream(video.video_path, { start, end }).pipe(res)
 }
 
-function publicVideoPayload(video) {
+// Where a video plays from and its thumbnail, by storage source. `scope` picks the
+// public or the signed-in route for files kept on this server's disk.
+function videoMedia(video, scope) {
+  if (video.source === 'youtube') {
+    return {
+      source: 'youtube',
+      youtubeId: video.youtube_id,
+      videoUrl: null,
+      embedUrl: `https://www.youtube-nocookie.com/embed/${video.youtube_id}`,
+      watchUrl: `https://www.youtube.com/watch?v=${video.youtube_id}`,
+      thumbnailUrl: video.thumbnail_url || `https://i.ytimg.com/vi/${video.youtube_id}/hqdefault.jpg`,
+    }
+  }
+  if (video.source === 'cloudinary') return { source: 'cloudinary', videoUrl: video.video_url, thumbnailUrl: video.thumbnail_url }
+  const base = scope === 'public' ? '/api/portfolio-videos' : '/api/videos'
+  return { source: 'file', videoUrl: `${base}/${video.id}/file`, thumbnailUrl: `${base}/${video.id}/thumbnail` }
+}
+
+async function publicVideoPayload(video) {
   return {
     id: video.id,
     title: video.title,
     description: video.description,
-    originalName: video.original_name,
+    originalName: video.source === 'file' ? video.original_name : '',
     mimeType: video.mime_type,
     durationSeconds: video.duration_seconds,
     uploadedAt: video.created_at,
-    uploadedBy: profileForUser(video.user_id).displayName,
-    videoUrl: `/api/portfolio-videos/${video.id}/file`,
-    thumbnailUrl: `/api/portfolio-videos/${video.id}/thumbnail`,
+    uploadedBy: (await profileForUser(video.user_id)).displayName,
+    ...videoMedia(video, 'public'),
   }
 }
 
-router.get('/portfolio-videos', (req, res) => {
-  const owner = publicProfileOwner()
+function privateVideoPayload(video) {
+  return {
+    id: video.id,
+    title: video.title,
+    description: video.description,
+    original_name: video.original_name,
+    mime_type: video.mime_type,
+    duration_seconds: video.duration_seconds,
+    size_bytes: video.size_bytes,
+    created_at: video.created_at,
+    ...videoMedia(video, 'private'),
+  }
+}
+
+router.get('/portfolio-videos', async (req, res) => {
+  const owner = await publicProfileOwner()
   if (!owner) return res.json({ videos: [] })
-  const videos = database.prepare('SELECT * FROM videos WHERE user_id = ? AND is_public = 1 ORDER BY created_at DESC').all(owner.id)
-  return res.json({ videos: videos.map(publicVideoPayload) })
+  const videos = await db.all('SELECT * FROM videos WHERE user_id = ? AND is_public = 1 ORDER BY created_at DESC', owner.id)
+  return res.json({ videos: await Promise.all(videos.map(publicVideoPayload)) })
 })
 
-router.get('/portfolio-videos/:id', (req, res) => {
-  const video = database.prepare('SELECT * FROM videos WHERE id = ? AND is_public = 1').get(req.params.id)
+router.get('/portfolio-videos/:id', async (req, res) => {
+  const video = await db.get('SELECT * FROM videos WHERE id = ? AND is_public = 1', req.params.id)
   if (!video) return res.status(404).json({ error: 'Video not found.' })
-  return res.json({ video: publicVideoPayload(video) })
+  return res.json({ video: await publicVideoPayload(video) })
 })
 
-router.get('/portfolio-videos/:id/file', (req, res) => {
-  const video = database.prepare('SELECT * FROM videos WHERE id = ? AND is_public = 1').get(req.params.id)
+router.get('/portfolio-videos/:id/file', async (req, res) => {
+  const video = await db.get("SELECT * FROM videos WHERE id = ? AND is_public = 1 AND source = 'file'", req.params.id)
   if (!video) return res.status(404).json({ error: 'Video not found.' })
   return streamVideoRange(req, res, video)
 })
 
-router.get('/portfolio-videos/:id/thumbnail', (req, res) => {
-  const video = database.prepare('SELECT thumbnail_path FROM videos WHERE id = ? AND is_public = 1').get(req.params.id)
+router.get('/portfolio-videos/:id/thumbnail', async (req, res) => {
+  const video = await db.get("SELECT thumbnail_path FROM videos WHERE id = ? AND is_public = 1 AND source = 'file'", req.params.id)
   if (!video) return res.status(404).json({ error: 'Video not found.' })
   res.type('image/jpeg')
   res.setHeader('Cache-Control', 'public, max-age=3600')
@@ -437,27 +547,26 @@ router.post('/videos/recovery-code', passwordRateLimit, async (req, res) => {
   if (!process.env.PORTAL_RECOVERY_CODE || !constantTimeMatch(recoveryCode, process.env.PORTAL_RECOVERY_CODE)) {
     return res.status(403).json({ error: 'Recovery code is invalid.' })
   }
-  const user = database.prepare('SELECT id FROM users WHERE email = ?').get(email)
+  const user = await db.get('SELECT id FROM users WHERE email = ?', email)
   if (user) {
     const credentials = await hashPassword(password)
-    database.prepare('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?')
-      .run(credentials.salt, credentials.hash, user.id)
-    database.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id)
+    await db.run('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?', credentials.salt, credentials.hash, user.id)
+    await db.run('DELETE FROM sessions WHERE user_id = ?', user.id)
   }
-  return res.json({ message: 'If that account exists, its password has been reset. Sign in and complete two-factor verification.' })
+  return res.json({ message: 'If that account exists, its password has been reset. Sign in to continue.' })
 })
 
 router.post('/auth/login', passwordRateLimit, async (req, res) => {
   const email = typeof req.body.email === 'string' ? req.body.email.trim().toLowerCase() : ''
   const password = typeof req.body.password === 'string' ? req.body.password : ''
-  if (!isValidEmail(email) || password.length > 256 || !(await passwordMatches(database.prepare('SELECT * FROM users WHERE email = ?').get(email), password))) {
+  if (!isValidEmail(email) || password.length > 256 || !(await passwordMatches(await db.get('SELECT * FROM users WHERE email = ?', email), password))) {
     return res.status(401).json({ error: 'Email or password is incorrect.' })
   }
-  const user = database.prepare('SELECT * FROM users WHERE email = ?').get(email)
+  const user = await db.get('SELECT * FROM users WHERE email = ?', email)
   if (user.status !== 'active') return res.status(401).json({ error: 'Email or password is incorrect.' })
   const twoFactorEnabled = user.email_2fa_enabled === 1
   const state = !twoFactorRequired ? 'authenticated' : (twoFactorEnabled ? 'two_factor_pending' : 'setup_required')
-  const csrfToken = issueSession(req, res, user.id, state)
+  const csrfToken = await issueSession(req, res, user.id, state)
   return res.json({ state, email, csrfToken, twoFactorEnabled, role: user.role })
 })
 
@@ -471,8 +580,7 @@ router.post('/auth/email-code/send', authRateLimit, loadSession, requireCsrf, as
   if (!mailTransport && !devConsoleDelivery) return res.status(503).json({ error: 'Email delivery is unavailable. Configure the SMTP settings and try again.' })
 
   const { code, hash } = createEmailOtp(req.session.user_id)
-  database.prepare('UPDATE users SET email_otp_hash = ?, email_otp_expires_at = ?, email_otp_attempts = 0 WHERE id = ?')
-    .run(hash, Date.now() + emailOtpLifetime, req.session.user_id)
+  await db.run('UPDATE users SET email_otp_hash = ?, email_otp_expires_at = ?, email_otp_attempts = 0 WHERE id = ?', hash, Date.now() + emailOtpLifetime, req.session.user_id)
   if (devConsoleDelivery) {
     console.log(`[dev] Email 2FA code for ${req.session.email}: ${code}`)
     res.setHeader('X-Dev-OTP', code)
@@ -486,110 +594,211 @@ router.post('/auth/email-code/send', authRateLimit, loadSession, requireCsrf, as
       text: `Your Frame by Frame verification code is ${code}. It expires in 10 minutes. If you did not request it, ignore this email.`,
     })
   } catch (error) {
-    database.prepare('UPDATE users SET email_otp_hash = NULL, email_otp_expires_at = NULL WHERE id = ?').run(req.session.user_id)
+    await db.run('UPDATE users SET email_otp_hash = NULL, email_otp_expires_at = NULL WHERE id = ?', req.session.user_id)
     console.error('Unable to send sign-in code:', error.message)
     return res.status(503).json({ error: 'The verification email could not be sent. Check the SMTP settings and try again.' })
   }
   return res.json({ message: `A verification code was sent to ${maskEmail(recipient)}.` })
 })
 
-router.post('/auth/email-code/verify', authRateLimit, loadSession, requireCsrf, (req, res) => {
+router.post('/auth/email-code/verify', authRateLimit, loadSession, requireCsrf, async (req, res) => {
   if (!['setup_required', 'two_factor_pending'].includes(req.session.state)) {
     return res.status(409).json({ error: 'This session is not waiting for email verification.' })
   }
-  const user = database.prepare('SELECT email_otp_hash, email_otp_expires_at, email_otp_attempts FROM users WHERE id = ?')
-    .get(req.session.user_id)
+  const user = await db.get('SELECT email_otp_hash, email_otp_expires_at, email_otp_attempts FROM users WHERE id = ?', req.session.user_id)
   if (!user.email_otp_hash || !user.email_otp_expires_at || user.email_otp_expires_at <= Date.now()) {
     return res.status(401).json({ error: 'That verification code expired. Send a new code.' })
   }
   if (user.email_otp_attempts >= emailOtpMaxAttempts) {
-    database.prepare('UPDATE users SET email_otp_hash = NULL, email_otp_expires_at = NULL WHERE id = ?').run(req.session.user_id)
+    await db.run('UPDATE users SET email_otp_hash = NULL, email_otp_expires_at = NULL WHERE id = ?', req.session.user_id)
     return res.status(429).json({ error: 'Too many code attempts. Send a new verification code.' })
   }
   if (!verifyEmailOtp(req.session.user_id, req.body.code, user.email_otp_hash)) {
-    database.prepare('UPDATE users SET email_otp_attempts = email_otp_attempts + 1 WHERE id = ?').run(req.session.user_id)
+    await db.run('UPDATE users SET email_otp_attempts = email_otp_attempts + 1 WHERE id = ?', req.session.user_id)
     return res.status(401).json({ error: 'That verification code is incorrect.' })
   }
-  database.prepare('UPDATE users SET email_2fa_enabled = 1, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_attempts = 0 WHERE id = ?')
-    .run(req.session.user_id)
-  database.prepare("UPDATE sessions SET state = 'authenticated' WHERE token_hash = ?").run(req.session.token_hash)
+  await db.run('UPDATE users SET email_2fa_enabled = 1, email_otp_hash = NULL, email_otp_expires_at = NULL, email_otp_attempts = 0 WHERE id = ?', req.session.user_id)
+  await db.run("UPDATE sessions SET state = 'authenticated' WHERE token_hash = ?", req.session.token_hash)
   return res.json({ state: 'authenticated', email: req.session.email, csrfToken: req.session.csrf_token, twoFactorEnabled: true, role: req.session.role })
 })
 
-router.post('/auth/logout', loadSession, requireCsrf, (req, res) => {
-  database.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.session.token_hash)
+router.post('/auth/logout', loadSession, requireCsrf, async (req, res) => {
+  await db.run('DELETE FROM sessions WHERE token_hash = ?', req.session.token_hash)
   clearSessionCookie(res)
   return res.status(204).end()
 })
 
-router.get('/videos', loadSession, requireTwoFactor, (req, res) => {
-  const videos = database.prepare(`
-    SELECT id, title, description, original_name, mime_type, duration_seconds, size_bytes, created_at
-    FROM videos WHERE user_id = ? ORDER BY created_at DESC
-  `).all(req.session.user_id).map((video) => ({
-    ...video,
-    videoUrl: `/api/videos/${video.id}/file`,
-    thumbnailUrl: `/api/videos/${video.id}/thumbnail`,
-  }))
-  return res.json({ videos })
+router.get('/videos', loadSession, requireTwoFactor, async (req, res) => {
+  const videos = await db.all('SELECT * FROM videos WHERE user_id = ? ORDER BY created_at DESC', req.session.user_id)
+  return res.json({ videos: videos.map(privateVideoPayload) })
 })
 
-router.get('/videos/thumbnails', loadSession, requireTwoFactor, (req, res) => {
-  const thumbnails = database.prepare('SELECT id, title, created_at FROM videos WHERE user_id = ? ORDER BY created_at DESC')
-    .all(req.session.user_id)
-    .map((video) => ({ ...video, thumbnailUrl: `/api/videos/${video.id}/thumbnail` }))
+router.get('/videos/thumbnails', loadSession, requireTwoFactor, async (req, res) => {
+  const videos = await db.all('SELECT * FROM videos WHERE user_id = ? ORDER BY created_at DESC', req.session.user_id)
+  const thumbnails = videos.map((video) => ({ id: video.id, title: video.title, created_at: video.created_at, source: video.source, thumbnailUrl: videoMedia(video, 'private').thumbnailUrl }))
   return res.json({ thumbnails })
 })
 
-router.get('/videos/export', loadSession, requireTwoFactor, (req, res) => {
-  const videos = database.prepare(`
-    SELECT id, title, description, original_name, mime_type, duration_seconds, size_bytes, created_at
-    FROM videos WHERE user_id = ? ORDER BY created_at DESC
-  `).all(req.session.user_id).map((video) => ({
-    ...video,
-    fileUrl: `/api/videos/${video.id}/file`,
-    thumbnailUrl: `/api/videos/${video.id}/thumbnail`,
-  }))
+router.get('/videos/export', loadSession, requireTwoFactor, async (req, res) => {
+  const videos = (await db.all('SELECT * FROM videos WHERE user_id = ? ORDER BY created_at DESC', req.session.user_id)).map((video) => {
+    const media = videoMedia(video, 'private')
+    return {
+      id: video.id,
+      title: video.title,
+      description: video.description,
+      original_name: video.original_name,
+      mime_type: video.mime_type,
+      duration_seconds: video.duration_seconds,
+      size_bytes: video.size_bytes,
+      created_at: video.created_at,
+      source: media.source,
+      fileUrl: media.videoUrl,
+      youtubeUrl: media.watchUrl || null,
+      thumbnailUrl: media.thumbnailUrl,
+    }
+  })
   res.setHeader('Content-Disposition', 'attachment; filename="video-details.json"')
   return res.json({ exportedAt: new Date().toISOString(), count: videos.length, videos })
 })
 
-router.get('/videos/:id/file', loadSession, requireTwoFactor, (req, res) => {
-  const video = database.prepare('SELECT video_path, mime_type, original_name FROM videos WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.session.user_id)
+router.get('/videos/:id/file', loadSession, requireTwoFactor, async (req, res) => {
+  const video = await db.get("SELECT video_path, mime_type, original_name FROM videos WHERE id = ? AND user_id = ? AND source = 'file'", req.params.id, req.session.user_id)
   if (!video) return res.status(404).json({ error: 'Video not found.' })
-  res.type(video.mime_type)
-  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(video.original_name)}"`)
-  const size = statSync(video.video_path).size
-  res.setHeader('Accept-Ranges', 'bytes')
-  const requestedRange = req.get('Range')
-  if (!requestedRange) {
-    res.setHeader('Content-Length', size)
-    return createReadStream(video.video_path).pipe(res)
-  }
-
-  const rangeMatch = /^bytes=(\d*)-(\d*)$/.exec(requestedRange)
-  const start = rangeMatch ? Number(rangeMatch[1] || 0) : size
-  const end = rangeMatch && rangeMatch[2] ? Math.min(Number(rangeMatch[2]), size - 1) : size - 1
-  if (!rangeMatch || start >= size || start > end) {
-    res.setHeader('Content-Range', `bytes */${size}`)
-    return res.status(416).end()
-  }
-
-  res.status(206)
-  res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`)
-  res.setHeader('Content-Length', end - start + 1)
-  return createReadStream(video.video_path, { start, end }).pipe(res)
+  return streamVideoRange(req, res, video)
 })
 
-router.get('/videos/:id/thumbnail', loadSession, requireTwoFactor, (req, res) => {
-  const video = database.prepare('SELECT thumbnail_path FROM videos WHERE id = ? AND user_id = ?')
-    .get(req.params.id, req.session.user_id)
+router.get('/videos/:id/thumbnail', loadSession, requireTwoFactor, async (req, res) => {
+  const video = await db.get("SELECT thumbnail_path FROM videos WHERE id = ? AND user_id = ? AND source = 'file'", req.params.id, req.session.user_id)
   if (!video) return res.status(404).json({ error: 'Video not found.' })
   res.type('image/jpeg')
   res.setHeader('Cache-Control', 'private, max-age=3600')
   return createReadStream(video.thumbnail_path).pipe(res)
 })
+
+// ---- Storage configuration and Cloudinary signed uploads ----
+
+router.get('/media/config', loadSession, requireTwoFactor, (req, res) => res.json({
+  storage: cloudinary ? 'cloudinary' : 'local',
+  maxVideoBytes: cloudinary ? cloudinary.maxVideoBytes : 500 * 1024 * 1024,
+  maxImageBytes: cloudinary ? cloudinary.maxImageBytes : 8 * 1024 * 1024,
+}))
+
+const cloudinaryFolders = { video: 'videos', thumbnail: 'thumbnails', profile: 'profiles' }
+
+router.post('/media/signature', uploadRateLimit, loadSession, requireCsrf, requireTwoFactor, (req, res) => {
+  if (!cloudinary) return res.status(409).json({ error: 'Cloudinary storage is not configured.' })
+  const purpose = req.body.purpose
+  if (!Object.hasOwn(cloudinaryFolders, purpose)) return res.status(400).json({ error: 'purpose must be video, thumbnail, or profile.' })
+  const params = { folder: `${cloudinary.folder}/${cloudinaryFolders[purpose]}`, timestamp: Math.floor(Date.now() / 1000) }
+  return res.json({
+    cloudName: cloudinary.cloudName,
+    apiKey: cloudinary.apiKey,
+    resourceType: purpose === 'video' ? 'video' : 'image',
+    ...params,
+    signature: cloudinarySignature(params),
+  })
+})
+
+function videoFields(body) {
+  const title = typeof body.title === 'string' ? body.title.trim().slice(0, 140) : ''
+  const description = typeof body.description === 'string' ? body.description.trim() : ''
+  if (!title) return { error: 'Add a project title.' }
+  if (description.length > 1200) return { error: 'Descriptions can be up to 1,200 characters.' }
+  return { title, description }
+}
+
+async function reusableThumbnail(videoId, userId) {
+  if (typeof videoId !== 'string' || !videoId) return null
+  const video = await db.get('SELECT * FROM videos WHERE id = ? AND user_id = ?', videoId, userId)
+  if (!video || video.source === 'file') return null
+  return { url: videoMedia(video, 'private').thumbnailUrl, publicId: null }
+}
+
+// Saves a video the browser already uploaded to Cloudinary.
+router.post('/videos/cloudinary', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
+  if (!cloudinary) return res.status(409).json({ error: 'Cloudinary storage is not configured.' })
+  const fields = videoFields(req.body)
+  if (fields.error) return res.status(400).json({ error: fields.error })
+  const video = verifiedCloudinaryAsset(req.body.video, 'video')
+  if (!video) return res.status(400).json({ error: 'The uploaded video could not be verified. Upload it again.' })
+  const thumbnail = req.body.reuseThumbnailOf
+    ? await reusableThumbnail(req.body.reuseThumbnailOf, req.session.user_id)
+    : verifiedCloudinaryAsset(req.body.thumbnail, 'image')
+  if (!thumbnail) return res.status(400).json({ error: 'The thumbnail could not be verified. Choose it again.' })
+  const duration = Number(req.body.duration) || Number(req.body.video?.duration) || 0
+  if (!Number.isFinite(duration) || duration < 0 || duration > 6 * 60 * 60) return res.status(400).json({ error: 'The video duration is not supported.' })
+
+  const id = randomUUID()
+  const originalName = typeof req.body.originalName === 'string'
+    ? [...req.body.originalName.split(/[\\/]/).pop()].filter((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127).join('').slice(0, 240)
+    : ''
+  await db.run(`
+    INSERT INTO videos (id, user_id, title, description, original_name, mime_type, duration_seconds, size_bytes, video_path, thumbnail_path,
+      source, video_url, thumbnail_url, cloudinary_video_id, cloudinary_thumbnail_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', 'cloudinary', ?, ?, ?, ?)
+  `, id, req.session.user_id, fields.title, fields.description, originalName || `${video.publicId}.${video.format || 'mp4'}`,
+  `video/${video.format === 'mov' ? 'quicktime' : video.format || 'mp4'}`, duration, video.bytes || 0, video.url, thumbnail.url, video.publicId, thumbnail.publicId)
+  return res.status(201).json({ video: privateVideoPayload(await db.get('SELECT * FROM videos WHERE id = ?', id)) })
+})
+
+// ---- YouTube links ----
+
+function youtubeIdFrom(input) {
+  if (typeof input !== 'string') return null
+  const value = input.trim()
+  if (/^[A-Za-z0-9_-]{11}$/.test(value)) return value
+  let url
+  try { url = new URL(value) } catch { return null }
+  const host = url.hostname.replace(/^www\.|^m\.|^music\./, '')
+  let id = null
+  if (host === 'youtu.be') id = url.pathname.slice(1).split('/')[0]
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+    if (url.pathname === '/watch') id = url.searchParams.get('v')
+    else {
+      const match = /^\/(?:embed|shorts|live|v)\/([^/?#]+)/.exec(url.pathname)
+      id = match?.[1] || null
+    }
+  }
+  return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null
+}
+
+async function youtubeDetails(youtubeId) {
+  try {
+    const response = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${youtubeId}`)}`, { signal: AbortSignal.timeout(5000) })
+    if (response.status === 401 || response.status === 403) return { embeddable: false }
+    if (response.status === 404 || response.status === 400) return { missing: true }
+    if (!response.ok) return {}
+    const details = await response.json()
+    return { title: typeof details.title === 'string' ? details.title.slice(0, 140) : '', author: details.author_name || '' }
+  } catch {
+    return {}
+  }
+}
+
+router.post('/videos/youtube/preview', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
+  const youtubeId = youtubeIdFrom(req.body.url)
+  if (!youtubeId) return res.status(400).json({ error: 'Paste a YouTube link, like https://www.youtube.com/watch?v=… or https://youtu.be/….' })
+  const details = await youtubeDetails(youtubeId)
+  if (details.missing) return res.status(404).json({ error: 'That YouTube video could not be found. Check that it is public or unlisted.' })
+  if (details.embeddable === false) return res.status(422).json({ error: 'That video does not allow embedding on other sites.' })
+  return res.json({ youtubeId, title: details.title || '', author: details.author || '', thumbnailUrl: `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` })
+})
+
+router.post('/videos/youtube', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
+  const youtubeId = youtubeIdFrom(req.body.url)
+  if (!youtubeId) return res.status(400).json({ error: 'Paste a valid YouTube link.' })
+  const fields = videoFields(req.body)
+  if (fields.error) return res.status(400).json({ error: fields.error })
+  const id = randomUUID()
+  await db.run(`
+    INSERT INTO videos (id, user_id, title, description, original_name, mime_type, duration_seconds, size_bytes, video_path, thumbnail_path,
+      source, youtube_id, thumbnail_url)
+    VALUES (?, ?, ?, ?, ?, 'video/youtube', 0, 0, '', '', 'youtube', ?, ?)
+  `, id, req.session.user_id, fields.title, fields.description, `https://www.youtube.com/watch?v=${youtubeId}`, youtubeId, `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`)
+  return res.status(201).json({ video: privateVideoPayload(await db.get('SELECT * FROM videos WHERE id = ?', id)) })
+})
+
+// ---- Local-disk uploads (used when Cloudinary isn't configured) ----
 
 // Short-lived single-use tokens let the browser upload straight to this API,
 // bypassing the Netlify proxy's request-size limit without cross-site cookies.
@@ -609,15 +818,15 @@ function uploadCors(req, res, next) {
   next()
 }
 
-function loadUploadToken(req, res, next) {
+async function loadUploadToken(req, res, next) {
   const token = req.get('X-Upload-Token') || ''
   const entry = uploadTokens.get(token)
   uploadTokens.delete(token)
   if (!entry || entry.expires < Date.now()) return res.status(401).json({ error: 'Upload authorization expired. Try again.' })
-  const session = database.prepare(`
+  const session = await db.get(`
     SELECT users.id AS user_id, users.email, users.email_2fa_enabled, users.role, 'authenticated' AS state
     FROM users WHERE users.id = ? AND users.status = 'active'
-  `).get(entry.userId)
+  `, entry.userId)
   if (!session) return res.status(401).json({ error: 'Upload authorization expired. Try again.' })
   req.session = session
   next()
@@ -631,6 +840,7 @@ router.post('/videos/upload-token', loadSession, requireCsrf, requireTwoFactor, 
 })
 
 const handleUpload = [uploadRateLimit, (req, res, next) => {
+  if (cloudinary) return res.status(409).json({ error: 'Videos are stored in Cloudinary. Refresh the page and try again.' })
   upload(req, res, (error) => error ? next(error) : next())
 }, async (req, res) => {
   const videoFile = req.files?.video?.[0]
@@ -674,14 +884,12 @@ const handleUpload = [uploadRateLimit, (req, res, next) => {
   renameSync(thumbnailFile.path, thumbnailPath)
   const basename = videoFile.originalname.split(/[\\/]/).pop()
   const originalName = [...basename].filter((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127).join('').slice(0, 240)
-  database.prepare(`
-    INSERT INTO videos (id, user_id, title, description, original_name, mime_type, duration_seconds, size_bytes, video_path, thumbnail_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, req.session.user_id, title, description, originalName, detectedVideo.mime, duration, videoFile.size, videoPath, thumbnailPath)
+  await db.run(`
+    INSERT INTO videos (id, user_id, title, description, original_name, mime_type, duration_seconds, size_bytes, video_path, thumbnail_path, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'file')
+  `, id, req.session.user_id, title, description, originalName, detectedVideo.mime, duration, videoFile.size, videoPath, thumbnailPath)
 
-  return res.status(201).json({
-    video: { id, title, description, originalName, mimeType: detectedVideo.mime, durationSeconds: duration, videoUrl: `/api/videos/${id}/file`, thumbnailUrl: `/api/videos/${id}/thumbnail` },
-  })
+  return res.status(201).json({ video: privateVideoPayload(await db.get('SELECT * FROM videos WHERE id = ?', id)) })
 }]
 
 router.post('/videos', loadSession, requireCsrf, requireTwoFactor, ...handleUpload)
@@ -721,7 +929,7 @@ app.use((error, req, res, next) => {
 })
 
 async function seedDevelopmentDemoOwner() {
-  if (!(process.argv.includes('--demo') || process.env.SEED_DEMO_OWNER === 'true') || database.prepare('SELECT COUNT(*) AS count FROM users').get().count > 0) return
+  if (!(process.argv.includes('--demo') || process.env.SEED_DEMO_OWNER === 'true') || (await db.get('SELECT COUNT(*) AS count FROM users')).count > 0) return
   const email = process.env.PORTAL_DEMO_EMAIL
   const password = process.env.PORTAL_DEMO_PASSWORD
   if (!email || !password) {
@@ -729,15 +937,13 @@ async function seedDevelopmentDemoOwner() {
     return
   }
   const credentials = await hashPassword(password)
-  const result = database.prepare("INSERT INTO users (email, password_salt, password_hash, role) VALUES (?, ?, ?, 'admin')")
-    .run(email, credentials.salt, credentials.hash)
-  database.prepare('INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)')
-    .run(Number(result.lastInsertRowid), defaultCreatorName, process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', process.env.VITE_CREATOR_BIO || 'Independent filmmaker and motion designer, drawn to small details and big feelings.', JSON.stringify(['Filmmaking', 'Motion design', 'Editing']))
-  console.log(`Development demo account initialized: ${email}. Authenticator setup is required on first sign-in.`)
+  const result = await db.run("INSERT INTO users (email, password_salt, password_hash, role) VALUES (?, ?, ?, 'admin')", email, credentials.salt, credentials.hash)
+  await db.run('INSERT INTO creator_profiles (user_id, display_name, location, bio, tags_json) VALUES (?, ?, ?, ?, ?)', Number(result.lastInsertRowid), defaultCreatorName, process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', process.env.VITE_CREATOR_BIO || 'Independent filmmaker and motion designer, drawn to small details and big feelings.', JSON.stringify(['Filmmaking', 'Motion design', 'Editing']))
+  console.log(`Demo admin account created: ${email}.`)
 }
 
 // With 2FA off, drop sessions stuck waiting for an email code so those browsers return to the sign-in form.
-if (!twoFactorRequired) database.prepare("DELETE FROM sessions WHERE state != 'authenticated'").run()
+if (!twoFactorRequired) await db.run("DELETE FROM sessions WHERE state != 'authenticated'")
 
 await seedDevelopmentDemoOwner()
 await restoreProfileBackup()
@@ -745,4 +951,4 @@ await restoreProfileBackup()
 const port = Number(process.env.PORT || 3001)
 const host = process.env.HOST || '0.0.0.0'
 const server = createServer(app)
-server.listen(port, host, () => console.log(`Portal API listening on http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`))
+server.listen(port, host, () => console.log(`Portal API listening on http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`))

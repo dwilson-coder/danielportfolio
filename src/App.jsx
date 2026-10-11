@@ -14,8 +14,10 @@ function projectFromUpload(video) {
   const hours = Math.floor(seconds / 3600)
   const minutes = Math.floor((seconds % 3600) / 60)
   const remainder = seconds % 60
-  const runtime = hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}` : `${minutes}:${String(remainder).padStart(2, '0')}`
-  return { ...video, slug: `uploaded-${video.id}`, kind: 'Uploaded film', date: uploadedDate.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }), runtime, image: video.thumbnailUrl, video: video.videoUrl }
+  const clock = hours ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}` : `${minutes}:${String(remainder).padStart(2, '0')}`
+  const isYoutube = video.source === 'youtube'
+  const runtime = seconds > 0 ? clock : (isYoutube ? 'YouTube' : '—')
+  return { ...video, slug: `uploaded-${video.id}`, kind: isYoutube ? 'YouTube film' : 'Uploaded film', date: uploadedDate.toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }), runtime, image: video.thumbnailUrl, video: video.videoUrl }
 }
 
 const films = [
@@ -99,7 +101,9 @@ function FilmDetail() {
   const displayedCreatorName = film?.uploadedBy || creatorName
   if (!film && slug.startsWith('uploaded-') && remoteFilm?.slug !== slug) return <main className="not-found"><p>Opening film…</p></main>
   if (!film) return <main className="not-found"><Eyebrow dark>THAT&apos;S A WRAP</Eyebrow><h1>Film not found.</h1><Link className="button button-dark" to="/">Back to the work <ArrowRight /></Link></main>
-  return <main className="detail-page"><div className="detail-topline"><Link to="/" className="back-link"><ArrowLeft size={16} /> All work</Link><span>PROJECT / {film.kind.toUpperCase()}</span></div><div className="player-frame"><video controls playsInline preload="metadata" poster={film.image} src={film.video} /><span className="player-label"><Clapperboard size={14} /> {`${displayedCreatorName.toUpperCase()} ORIGINAL`}</span></div><section className="detail-content"><div className="detail-heading"><div><Eyebrow dark>{film.kind.toUpperCase()}</Eyebrow><h1>{film.title}</h1><p className="uploaded-by">Uploaded by <strong>{displayedCreatorName}</strong></p>{film.originalName && <p className="original-file-name"><span>ORIGINAL FILE</span> {film.originalName}</p>}</div><p className="detail-description">{film.description}</p></div><div className="detail-facts"><div><span>UPLOADED</span><strong>{film.date}</strong></div><div><span>RUNTIME</span><strong>{film.runtime}</strong></div><div><span>UPLOADED BY</span><strong>{displayedCreatorName}</strong></div><div><span>ROLE</span><strong>Director &amp; editor</strong></div></div><SharePanel film={film} /><section className="comments-panel" aria-labelledby="comments-title"><div><Eyebrow dark>THE CONVERSATION</Eyebrow><h2 id="comments-title">Leave a little note.</h2><p>Comments aren&apos;t switched on for this preview.</p></div><form onSubmit={(event) => event.preventDefault()}><label className="visually-hidden" htmlFor="comment">Write a comment</label><textarea id="comment" placeholder="Your thoughts go here..." disabled /><button type="submit" className="button button-dark" disabled>Post a comment <ArrowUpRight size={15} /></button></form></section></section></main>
+  return <main className="detail-page"><div className="detail-topline"><Link to="/" className="back-link"><ArrowLeft size={16} /> All work</Link><span>PROJECT / {film.kind.toUpperCase()}</span></div><div className="player-frame">{film.embedUrl
+    ? <iframe src={`${film.embedUrl}?rel=0&modestbranding=1`} title={film.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerPolicy="strict-origin-when-cross-origin" allowFullScreen />
+    : <video controls playsInline preload="metadata" poster={film.image} src={film.video} />}{!film.embedUrl && <span className="player-label"><Clapperboard size={14} /> {`${displayedCreatorName.toUpperCase()} ORIGINAL`}</span>}</div><section className="detail-content"><div className="detail-heading"><div><Eyebrow dark>{film.kind.toUpperCase()}</Eyebrow><h1>{film.title}</h1><p className="uploaded-by">Uploaded by <strong>{displayedCreatorName}</strong></p>{film.watchUrl && <p className="original-file-name"><a href={film.watchUrl} target="_blank" rel="noreferrer">Watch on YouTube <ArrowUpRight size={12} /></a></p>}{film.originalName && <p className="original-file-name"><span>ORIGINAL FILE</span> {film.originalName}</p>}</div><p className="detail-description">{film.description}</p></div><div className="detail-facts"><div><span>UPLOADED</span><strong>{film.date}</strong></div><div><span>RUNTIME</span><strong>{film.runtime}</strong></div><div><span>UPLOADED BY</span><strong>{displayedCreatorName}</strong></div><div><span>ROLE</span><strong>Director &amp; editor</strong></div></div><SharePanel film={film} /><section className="comments-panel" aria-labelledby="comments-title"><div><Eyebrow dark>THE CONVERSATION</Eyebrow><h2 id="comments-title">Leave a little note.</h2><p>Comments aren&apos;t switched on for this preview.</p></div><form onSubmit={(event) => event.preventDefault()}><label className="visually-hidden" htmlFor="comment">Write a comment</label><textarea id="comment" placeholder="Your thoughts go here..." disabled /><button type="submit" className="button button-dark" disabled>Post a comment <ArrowUpRight size={15} /></button></form></section></section></main>
 }
 
 function About() {
@@ -120,4 +124,4 @@ function ScrollToTop() {
 
 export default function App() {
   return <BrowserRouter><ScrollToTop /><Header /><Routes><Route path="/" element={<Home />} /><Route path="/film/:slug" element={<FilmDetail />} /><Route path="/about" element={<About />} /><Route path="/admin" element={<PortalPage />} /><Route path="/portal" element={<PortalPage />} /></Routes><Footer /></BrowserRouter>
-}
+}

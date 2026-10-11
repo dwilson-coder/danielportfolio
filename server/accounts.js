@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import express from 'express'
-import { database } from './database.js'
+import { db, deleteUserCascade } from './database.js'
 import { hashPassword, hashToken, verifyPassword } from './security.js'
 
 const roles = ['user', 'admin']
@@ -49,16 +49,17 @@ function requestPayload(request) {
   }
 }
 
-function activeAdminCount() {
-  return database.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active'").get().count
+async function activeAdminCount() {
+  return (await db.get("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active'")).count
 }
 
-function revokeSessions(userId) {
-  database.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId)
+async function revokeSessions(userId) {
+  await db.run('DELETE FROM sessions WHERE user_id = ?', userId)
 }
 
 function isUniqueViolation(error) {
-  return typeof error?.message === 'string' && error.message.includes('UNIQUE constraint failed')
+  const messages = [error?.message, error?.cause?.message].filter((message) => typeof message === 'string')
+  return messages.some((message) => message.includes('UNIQUE constraint failed'))
 }
 
 export function createAccountsRouter({
@@ -104,11 +105,10 @@ export function createAccountsRouter({
       return res.status(400).json({ error: `Enter a valid email, a display name up to 80 characters, a message up to 500 characters. ${passwordError}` })
     }
     const credentials = await hashPassword(req.body.password)
-    const taken = database.prepare('SELECT 1 FROM users WHERE email = ?').get(email)
+    const taken = await db.get('SELECT 1 FROM users WHERE email = ?', email)
     if (!taken) {
       try {
-        database.prepare('INSERT INTO account_requests (email, display_name, message, password_salt, password_hash) VALUES (?, ?, ?, ?, ?)')
-          .run(email, displayName, message, credentials.salt, credentials.hash)
+        await db.run('INSERT INTO account_requests (email, display_name, message, password_salt, password_hash) VALUES (?, ?, ?, ?, ?)', email, displayName, message, credentials.salt, credentials.hash)
       } catch (error) {
         if (!isUniqueViolation(error)) throw error
       }
@@ -120,12 +120,11 @@ export function createAccountsRouter({
   router.post('/auth/password-reset/request', passwordRateLimit, async (req, res) => {
     const email = normalizeEmail(req.body.email)
     if (!isValidEmail(email)) return res.status(400).json({ error: 'Enter a valid email address.' })
-    const user = database.prepare("SELECT id, email FROM users WHERE email = ? AND status = 'active'").get(email)
+    const user = await db.get("SELECT id, email FROM users WHERE email = ? AND status = 'active'", email)
     if (user) {
       const token = randomBytes(32).toString('base64url')
-      database.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(user.id)
-      database.prepare('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-        .run(hashToken(token), user.id, Date.now() + passwordResetLifetime)
+      await db.run('DELETE FROM password_reset_tokens WHERE user_id = ?', user.id)
+      await db.run('INSERT INTO password_reset_tokens (token_hash, user_id, expires_at) VALUES (?, ?, ?)', hashToken(token), user.id, Date.now() + passwordResetLifetime)
       try {
         await sendResetEmail(user.email, token)
       } catch (error) {
@@ -140,26 +139,26 @@ export function createAccountsRouter({
     if (!token || token.length > 128 || !validPassword(req.body.password)) {
       return res.status(400).json({ error: `A reset token is required. ${passwordError}` })
     }
-    const record = database.prepare('SELECT user_id, expires_at FROM password_reset_tokens WHERE token_hash = ?').get(hashToken(token))
+    const record = await db.get('SELECT user_id, expires_at FROM password_reset_tokens WHERE token_hash = ?', hashToken(token))
     if (!record || record.expires_at <= Date.now()) {
       return res.status(400).json({ error: 'That reset token is invalid or has expired.' })
     }
     const credentials = await hashPassword(req.body.password)
-    database.prepare('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?').run(credentials.salt, credentials.hash, record.user_id)
-    database.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(record.user_id)
-    revokeSessions(record.user_id)
+    await db.run('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?', credentials.salt, credentials.hash, record.user_id)
+    await db.run('DELETE FROM password_reset_tokens WHERE user_id = ?', record.user_id)
+    await revokeSessions(record.user_id)
     return res.json({ message: 'Your password has been reset. Sign in with the new password.' })
   })
 
   // ---- Signed-in user: own account ----
 
-  router.get('/account', ...authed, (req, res) => {
-    const user = database.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user_id)
+  router.get('/account', ...authed, async (req, res) => {
+    const user = await db.get('SELECT * FROM users WHERE id = ?', req.session.user_id)
     return res.json(userPayload(user))
   })
 
   router.patch('/account', ...authedWrite, async (req, res) => {
-    const user = database.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user_id)
+    const user = await db.get('SELECT * FROM users WHERE id = ?', req.session.user_id)
     const next = { email: user.email, display_name: user.display_name }
     if (req.body.displayName !== undefined) {
       next.display_name = text(req.body.displayName)
@@ -175,43 +174,43 @@ export function createAccountsRouter({
       }
     }
     try {
-      database.prepare('UPDATE users SET email = ?, display_name = ? WHERE id = ?').run(next.email, next.display_name, user.id)
+      await db.run('UPDATE users SET email = ?, display_name = ? WHERE id = ?', next.email, next.display_name, user.id)
     } catch (error) {
       if (isUniqueViolation(error)) return res.status(409).json({ error: 'That email is already in use.' })
       throw error
     }
-    return res.json(userPayload(database.prepare('SELECT * FROM users WHERE id = ?').get(user.id)))
+    return res.json(userPayload(await db.get('SELECT * FROM users WHERE id = ?', user.id)))
   })
 
   router.post('/account/password', ...authedWrite, async (req, res) => {
-    const user = database.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user_id)
+    const user = await db.get('SELECT * FROM users WHERE id = ?', req.session.user_id)
     if (typeof req.body.currentPassword !== 'string' || !(await verifyPassword(req.body.currentPassword, user.password_salt, user.password_hash))) {
       return res.status(403).json({ error: 'Current password is incorrect.' })
     }
     if (!validPassword(req.body.newPassword)) return res.status(400).json({ error: passwordError })
     const credentials = await hashPassword(req.body.newPassword)
-    database.prepare('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?').run(credentials.salt, credentials.hash, user.id)
-    revokeSessions(user.id)
+    await db.run('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?', credentials.salt, credentials.hash, user.id)
+    await revokeSessions(user.id)
     clearSessionCookie(res)
     return res.json({ message: 'Password updated. Sign in again with the new password.' })
   })
 
   router.delete('/account', ...authedWrite, async (req, res) => {
-    const user = database.prepare('SELECT * FROM users WHERE id = ?').get(req.session.user_id)
+    const user = await db.get('SELECT * FROM users WHERE id = ?', req.session.user_id)
     if (typeof req.body.currentPassword !== 'string' || !(await verifyPassword(req.body.currentPassword, user.password_salt, user.password_hash))) {
       return res.status(403).json({ error: 'Current password is incorrect.' })
     }
-    if (user.role === 'admin' && activeAdminCount() <= 1) {
+    if (user.role === 'admin' && (await activeAdminCount()) <= 1) {
       return res.status(409).json({ error: 'The last active administrator cannot be deleted.' })
     }
-    database.prepare('DELETE FROM users WHERE id = ?').run(user.id)
+    await deleteUserCascade(user.id)
     clearSessionCookie(res)
     return res.status(204).end()
   })
 
   // ---- Admin: users ----
 
-  router.get('/admin/users', ...adminRead, (req, res) => {
+  router.get('/admin/users', ...adminRead, async (req, res) => {
     const { limit, offset } = parsePaging(req.query)
     const where = []
     const params = []
@@ -231,8 +230,8 @@ export function createAccountsRouter({
       params.push(pattern, pattern)
     }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : ''
-    const total = database.prepare(`SELECT COUNT(*) AS count FROM users ${clause}`).get(...params).count
-    const items = database.prepare(`SELECT * FROM users ${clause} ORDER BY id LIMIT ? OFFSET ?`).all(...params, limit, offset)
+    const total = (await db.get(`SELECT COUNT(*) AS count FROM users ${clause}`, ...params)).count
+    const items = await db.all(`SELECT * FROM users ${clause} ORDER BY id LIMIT ? OFFSET ?`, ...params, limit, offset)
     return res.json({ items: items.map(userPayload), total, limit, offset })
   })
 
@@ -246,9 +245,8 @@ export function createAccountsRouter({
     }
     const credentials = await hashPassword(req.body.password)
     try {
-      const result = database.prepare('INSERT INTO users (email, password_salt, password_hash, display_name, role, status) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(email, credentials.salt, credentials.hash, displayName, role, status)
-      const user = database.prepare('SELECT * FROM users WHERE id = ?').get(Number(result.lastInsertRowid))
+      const result = await db.run('INSERT INTO users (email, password_salt, password_hash, display_name, role, status) VALUES (?, ?, ?, ?, ?, ?)', email, credentials.salt, credentials.hash, displayName, role, status)
+      const user = await db.get('SELECT * FROM users WHERE id = ?', Number(result.lastInsertRowid))
       return res.status(201).set('Location', `/api/admin/users/${user.id}`).json(userPayload(user))
     } catch (error) {
       if (isUniqueViolation(error)) return res.status(409).json({ error: 'A user with that email already exists.' })
@@ -256,16 +254,16 @@ export function createAccountsRouter({
     }
   })
 
-  router.get('/admin/users/:id', ...adminRead, (req, res) => {
+  router.get('/admin/users/:id', ...adminRead, async (req, res) => {
     const id = parseId(req.params.id)
-    const user = id && database.prepare('SELECT * FROM users WHERE id = ?').get(id)
+    const user = id && await db.get('SELECT * FROM users WHERE id = ?', id)
     if (!user) return res.status(404).json({ error: 'User not found.' })
     return res.json(userPayload(user))
   })
 
   router.patch('/admin/users/:id', ...adminWrite, async (req, res) => {
     const id = parseId(req.params.id)
-    const user = id && database.prepare('SELECT * FROM users WHERE id = ?').get(id)
+    const user = id && await db.get('SELECT * FROM users WHERE id = ?', id)
     if (!user) return res.status(404).json({ error: 'User not found.' })
 
     const next = { email: user.email, display_name: user.display_name, role: user.role, status: user.status }
@@ -288,40 +286,39 @@ export function createAccountsRouter({
     if (req.body.password !== undefined && !validPassword(req.body.password)) return res.status(400).json({ error: passwordError })
 
     const losesAdmin = user.role === 'admin' && user.status === 'active' && (next.role !== 'admin' || next.status !== 'active')
-    if (losesAdmin && activeAdminCount() <= 1) {
+    if (losesAdmin && (await activeAdminCount()) <= 1) {
       return res.status(409).json({ error: 'The last active administrator cannot be demoted or disabled.' })
     }
 
     try {
-      database.prepare('UPDATE users SET email = ?, display_name = ?, role = ?, status = ? WHERE id = ?')
-        .run(next.email, next.display_name, next.role, next.status, id)
+      await db.run('UPDATE users SET email = ?, display_name = ?, role = ?, status = ? WHERE id = ?', next.email, next.display_name, next.role, next.status, id)
     } catch (error) {
       if (isUniqueViolation(error)) return res.status(409).json({ error: 'A user with that email already exists.' })
       throw error
     }
     if (req.body.password !== undefined) {
       const credentials = await hashPassword(req.body.password)
-      database.prepare('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?').run(credentials.salt, credentials.hash, id)
+      await db.run('UPDATE users SET password_salt = ?, password_hash = ? WHERE id = ?', credentials.salt, credentials.hash, id)
     }
-    if (req.body.password !== undefined || next.status === 'disabled' || next.role !== user.role) revokeSessions(id)
-    return res.json(userPayload(database.prepare('SELECT * FROM users WHERE id = ?').get(id)))
+    if (req.body.password !== undefined || next.status === 'disabled' || next.role !== user.role) await revokeSessions(id)
+    return res.json(userPayload(await db.get('SELECT * FROM users WHERE id = ?', id)))
   })
 
-  router.delete('/admin/users/:id', ...adminWrite, (req, res) => {
+  router.delete('/admin/users/:id', ...adminWrite, async (req, res) => {
     const id = parseId(req.params.id)
-    const user = id && database.prepare('SELECT * FROM users WHERE id = ?').get(id)
+    const user = id && await db.get('SELECT * FROM users WHERE id = ?', id)
     if (!user) return res.status(404).json({ error: 'User not found.' })
     if (user.id === req.session.user_id) return res.status(409).json({ error: 'Use DELETE /api/account to delete your own account.' })
-    if (user.role === 'admin' && user.status === 'active' && activeAdminCount() <= 1) {
+    if (user.role === 'admin' && user.status === 'active' && (await activeAdminCount()) <= 1) {
       return res.status(409).json({ error: 'The last active administrator cannot be deleted.' })
     }
-    database.prepare('DELETE FROM users WHERE id = ?').run(id)
+    await deleteUserCascade(id)
     return res.status(204).end()
   })
 
   // ---- Admin: account requests ----
 
-  router.get('/admin/account-requests', ...adminRead, (req, res) => {
+  router.get('/admin/account-requests', ...adminRead, async (req, res) => {
     const { limit, offset } = parsePaging(req.query)
     const params = []
     let clause = ''
@@ -330,21 +327,21 @@ export function createAccountsRouter({
       clause = 'WHERE status = ?'
       params.push(req.query.status)
     }
-    const total = database.prepare(`SELECT COUNT(*) AS count FROM account_requests ${clause}`).get(...params).count
-    const items = database.prepare(`SELECT * FROM account_requests ${clause} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset)
+    const total = (await db.get(`SELECT COUNT(*) AS count FROM account_requests ${clause}`, ...params)).count
+    const items = await db.all(`SELECT * FROM account_requests ${clause} ORDER BY id DESC LIMIT ? OFFSET ?`, ...params, limit, offset)
     return res.json({ items: items.map(requestPayload), total, limit, offset })
   })
 
-  router.get('/admin/account-requests/:id', ...adminRead, (req, res) => {
+  router.get('/admin/account-requests/:id', ...adminRead, async (req, res) => {
     const id = parseId(req.params.id)
-    const request = id && database.prepare('SELECT * FROM account_requests WHERE id = ?').get(id)
+    const request = id && await db.get('SELECT * FROM account_requests WHERE id = ?', id)
     if (!request) return res.status(404).json({ error: 'Account request not found.' })
     return res.json(requestPayload(request))
   })
 
-  router.post('/admin/account-requests/:id/approve', ...adminWrite, (req, res) => {
+  router.post('/admin/account-requests/:id/approve', ...adminWrite, async (req, res) => {
     const id = parseId(req.params.id)
-    const request = id && database.prepare('SELECT * FROM account_requests WHERE id = ?').get(id)
+    const request = id && await db.get('SELECT * FROM account_requests WHERE id = ?', id)
     if (!request) return res.status(404).json({ error: 'Account request not found.' })
     if (request.status !== 'pending') return res.status(409).json({ error: `This request was already ${request.status}.` })
     const role = req.body.role ?? 'user'
@@ -352,39 +349,35 @@ export function createAccountsRouter({
     const note = text(req.body.note)
     if (note.length > 500) return res.status(400).json({ error: 'Note must be 500 characters or fewer.' })
 
-    database.exec('BEGIN')
     try {
-      const result = database.prepare('INSERT INTO users (email, password_salt, password_hash, display_name, role) VALUES (?, ?, ?, ?, ?)')
-        .run(request.email, request.password_salt, request.password_hash, request.display_name, role)
-      database.prepare("UPDATE account_requests SET status = 'approved', review_note = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?")
-        .run(note, req.session.user_id, id)
-      database.exec('COMMIT')
-      const user = database.prepare('SELECT * FROM users WHERE id = ?').get(Number(result.lastInsertRowid))
-      return res.json({ request: requestPayload(database.prepare('SELECT * FROM account_requests WHERE id = ?').get(id)), user: userPayload(user) })
+      const [result] = await db.batch([
+        ['INSERT INTO users (email, password_salt, password_hash, display_name, role) VALUES (?, ?, ?, ?, ?)', request.email, request.password_salt, request.password_hash, request.display_name, role],
+        ["UPDATE account_requests SET status = 'approved', review_note = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?", note, req.session.user_id, id],
+      ])
+      const user = await db.get('SELECT * FROM users WHERE id = ?', Number(result.lastInsertRowid))
+      return res.json({ request: requestPayload(await db.get('SELECT * FROM account_requests WHERE id = ?', id)), user: userPayload(user) })
     } catch (error) {
-      database.exec('ROLLBACK')
       if (isUniqueViolation(error)) return res.status(409).json({ error: 'A user with that email already exists.' })
       throw error
     }
   })
 
-  router.post('/admin/account-requests/:id/reject', ...adminWrite, (req, res) => {
+  router.post('/admin/account-requests/:id/reject', ...adminWrite, async (req, res) => {
     const id = parseId(req.params.id)
-    const request = id && database.prepare('SELECT * FROM account_requests WHERE id = ?').get(id)
+    const request = id && await db.get('SELECT * FROM account_requests WHERE id = ?', id)
     if (!request) return res.status(404).json({ error: 'Account request not found.' })
     if (request.status !== 'pending') return res.status(409).json({ error: `This request was already ${request.status}.` })
     const note = text(req.body.note)
     if (note.length > 500) return res.status(400).json({ error: 'Note must be 500 characters or fewer.' })
-    database.prepare("UPDATE account_requests SET status = 'rejected', review_note = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?")
-      .run(note, req.session.user_id, id)
-    return res.json(requestPayload(database.prepare('SELECT * FROM account_requests WHERE id = ?').get(id)))
+    await db.run("UPDATE account_requests SET status = 'rejected', review_note = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?", note, req.session.user_id, id)
+    return res.json(requestPayload(await db.get('SELECT * FROM account_requests WHERE id = ?', id)))
   })
 
-  router.delete('/admin/account-requests/:id', ...adminWrite, (req, res) => {
+  router.delete('/admin/account-requests/:id', ...adminWrite, async (req, res) => {
     const id = parseId(req.params.id)
-    const request = id && database.prepare('SELECT id FROM account_requests WHERE id = ?').get(id)
+    const request = id && await db.get('SELECT id FROM account_requests WHERE id = ?', id)
     if (!request) return res.status(404).json({ error: 'Account request not found.' })
-    database.prepare('DELETE FROM account_requests WHERE id = ?').run(id)
+    await db.run('DELETE FROM account_requests WHERE id = ?', id)
     return res.status(204).end()
   })
 

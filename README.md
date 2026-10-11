@@ -9,8 +9,8 @@ An independent film, motion design, and animation portfolio with a private creat
 
 - React 19 and Vite 8
 - Express 5 and Node.js 24
-- SQLite-backed creator account, profile, sessions, and video metadata
-- Local disk storage for video, thumbnail, and profile-image uploads
+- Turso (hosted libSQL/SQLite) for accounts, profile, sessions, and video entries; a local SQLite file in development
+- Cloudinary for uploaded videos, thumbnails, and profile images; local disk in development
 
 ## Local setup
 
@@ -28,7 +28,7 @@ Vite serves the site on port `5173` and proxies `/api` to the Express API on por
 ## Creator dashboard
 
 - Edit the public display name, Pittsburgh location, bio, tags, and profile image. Limits are 80 characters for name, 100 for location, 600 for bio, and 8 tags of up to 24 characters each.
-- Drag and drop or browse for MP4, M4V, MOV, or WebM videos up to 500 MB. The browser generates a thumbnail from a decoded video frame.
+- Drag and drop or browse for MP4, M4V, MOV, or WebM videos (up to 100 MB on Cloudinary's free plan, 500 MB on local disk), or paste a YouTube link instead. The browser generates a thumbnail from a decoded video frame; YouTube links use the video's own thumbnail.
 - Pick the generated frame or reuse a thumbnail from the creator's library. Add a title (up to 140 characters) and description (up to 1,200 characters).
 - Uploaded projects are published to the homepage gallery and have their own watch/detail pages. Video playback supports HTTP byte-range requests for seeking.
 
@@ -58,9 +58,16 @@ The first user (and any user made with `npm run create-user`) is an administrato
 - Sessions use random database-backed tokens in `HttpOnly`, `SameSite=Strict` cookies. Mutating requests require CSRF tokens; login, recovery, and uploads are rate-limited.
 - Video and thumbnail files are inspected by file signature, not just filename or browser MIME type. Profile images are limited to JPEG, PNG, and WebP, up to 5 MB.
 - Production requires a 32-character-or-longer `SESSION_SECRET` and `PORTAL_RECOVERY_CODE`. Email two-factor sign-in is currently off; to turn it on, set `TWO_FACTOR_REQUIRED=true` plus `TWO_FACTOR_EMAIL` and working `SMTP_HOST`, `SMTP_USER`, and `SMTP_PASSWORD` settings. Serve the app behind HTTPS; production session cookies use `Secure`. Explicit demo passwords are refused when `NODE_ENV=production`.
-- SQLite and media are stored in `server/data/` and `server/uploads/`, both ignored by git. Back up both locations. The SQLite driver is Node's built-in `node:sqlite` module and currently emits an experimental-feature warning.
+- With `TURSO_DATABASE_URL` and `CLOUDINARY_URL` set, all data and media are stored off-server, so nothing is lost when Render restarts or redeploys. Without them, SQLite and media are stored in `server/data/` and `server/uploads/`, both ignored by git.
 
 ## Production
+
+### Permanent storage (Turso + Cloudinary)
+
+Render's free plan erases the server's disk on every restart, so production keeps its data elsewhere:
+
+1. **Turso** (database): create a free account at turso.tech, create a database, then copy its URL (`libsql://…`) and create an auth token. Set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` in Render. Tables are created automatically on first start, and the demo admin is created once from `PORTAL_DEMO_EMAIL` / `PORTAL_DEMO_PASSWORD` while the database has no users.
+2. **Cloudinary** (uploads): create a free account at cloudinary.com, copy the **API environment variable** (`cloudinary://<key>:<secret>@<cloud>`) from the dashboard, and set it as `CLOUDINARY_URL` in Render. Videos and images upload straight from the browser to Cloudinary; the server only signs and verifies each upload.
 
 Configure `.env` with your public site URL, social profile URLs, long random secrets, SMTP sender credentials, `TWO_FACTOR_EMAIL`, and persistent storage paths. Then build and run the combined API/site server:
 

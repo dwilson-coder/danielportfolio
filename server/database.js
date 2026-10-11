@@ -1,15 +1,53 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { createClient } from '@libsql/client'
 
-export const databasePath = resolve(process.env.DATABASE_PATH || 'server/data/portfolio.sqlite')
-mkdirSync(dirname(databasePath), { recursive: true })
+// Production stores everything in a hosted Turso (libSQL) database so data survives
+// Render restarts. Without TURSO_DATABASE_URL, a local SQLite file is used instead.
+export const usingRemoteDatabase = Boolean(process.env.TURSO_DATABASE_URL)
+const localPath = process.env.DATABASE_PATH || 'server/data/portfolio.sqlite'
+export const databasePath = usingRemoteDatabase ? process.env.TURSO_DATABASE_URL : resolve(localPath)
 
-export const database = new DatabaseSync(databasePath)
-database.exec(`
-  PRAGMA foreign_keys = ON;
-  PRAGMA journal_mode = WAL;
+if (!usingRemoteDatabase) mkdirSync(dirname(resolve(localPath)), { recursive: true })
 
+const client = createClient(usingRemoteDatabase
+  ? { url: process.env.TURSO_DATABASE_URL, authToken: process.env.TURSO_AUTH_TOKEN }
+  : { url: `file:${localPath.replace(/\\/g, '/')}` })
+
+function plainRow(result, row) {
+  const object = {}
+  result.columns.forEach((column, index) => { object[column] = row[index] })
+  return object
+}
+
+const statement = (sql, args) => ({ sql, args: args.map((value) => (value === undefined ? null : value)) })
+
+export const db = {
+  async get(sql, ...args) {
+    const result = await client.execute(statement(sql, args))
+    return result.rows[0] ? plainRow(result, result.rows[0]) : undefined
+  },
+  async all(sql, ...args) {
+    const result = await client.execute(statement(sql, args))
+    return result.rows.map((row) => plainRow(result, row))
+  },
+  async run(sql, ...args) {
+    const result = await client.execute(statement(sql, args))
+    return { changes: result.rowsAffected, lastInsertRowid: result.lastInsertRowid === undefined ? undefined : Number(result.lastInsertRowid) }
+  },
+  // Runs several statements atomically. Each entry is [sql, ...args].
+  async batch(entries) {
+    const results = await client.batch(entries.map(([sql, ...args]) => statement(sql, args)), 'write')
+    return results.map((result) => ({ changes: result.rowsAffected, lastInsertRowid: result.lastInsertRowid === undefined ? undefined : Number(result.lastInsertRowid) }))
+  },
+  async exec(sql) {
+    await client.executeMultiple(sql)
+  },
+}
+
+if (!usingRemoteDatabase) await db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;')
+
+await db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -85,21 +123,59 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS videos_owner ON videos(user_id, created_at DESC);
 `)
 
-const videoColumns = new Set(database.prepare('PRAGMA table_info(videos)').all().map((column) => column.name))
-if (!videoColumns.has('description')) database.exec("ALTER TABLE videos ADD COLUMN description TEXT NOT NULL DEFAULT ''")
-if (!videoColumns.has('is_public')) database.exec('ALTER TABLE videos ADD COLUMN is_public INTEGER NOT NULL DEFAULT 1')
+async function columnsOf(table) {
+  return new Set((await db.all(`PRAGMA table_info(${table})`)).map((column) => column.name))
+}
 
-const userColumns = new Set(database.prepare('PRAGMA table_info(users)').all().map((column) => column.name))
-if (!userColumns.has('email_otp_hash')) database.exec('ALTER TABLE users ADD COLUMN email_otp_hash TEXT')
-if (!userColumns.has('email_otp_expires_at')) database.exec('ALTER TABLE users ADD COLUMN email_otp_expires_at INTEGER')
-if (!userColumns.has('email_otp_attempts')) database.exec('ALTER TABLE users ADD COLUMN email_otp_attempts INTEGER NOT NULL DEFAULT 0')
-if (!userColumns.has('email_2fa_enabled')) database.exec('ALTER TABLE users ADD COLUMN email_2fa_enabled INTEGER NOT NULL DEFAULT 0')
+async function addMissingColumns(table, definitions) {
+  const existing = await columnsOf(table)
+  for (const [name, definition] of Object.entries(definitions)) {
+    if (!existing.has(name)) await db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`)
+  }
+}
 
-if (!userColumns.has('role')) database.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
-if (!userColumns.has('status')) database.exec("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
-if (!userColumns.has('display_name')) database.exec("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+await addMissingColumns('videos', {
+  description: "TEXT NOT NULL DEFAULT ''",
+  is_public: 'INTEGER NOT NULL DEFAULT 1',
+  // 'file' = stored on this server's disk, 'cloudinary' = Cloudinary upload, 'youtube' = linked YouTube video.
+  source: "TEXT NOT NULL DEFAULT 'file'",
+  video_url: 'TEXT',
+  thumbnail_url: 'TEXT',
+  youtube_id: 'TEXT',
+  cloudinary_video_id: 'TEXT',
+  cloudinary_thumbnail_id: 'TEXT',
+})
+
+await addMissingColumns('users', {
+  email_otp_hash: 'TEXT',
+  email_otp_expires_at: 'INTEGER',
+  email_otp_attempts: 'INTEGER NOT NULL DEFAULT 0',
+  email_2fa_enabled: 'INTEGER NOT NULL DEFAULT 0',
+  role: "TEXT NOT NULL DEFAULT 'user'",
+  status: "TEXT NOT NULL DEFAULT 'active'",
+  display_name: "TEXT NOT NULL DEFAULT ''",
+})
+
+await addMissingColumns('creator_profiles', {
+  image_url: 'TEXT',
+  image_public_id: 'TEXT',
+})
+
 // The original single-owner account becomes the first admin.
-database.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users) AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin')")
+await db.run("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users) AND NOT EXISTS (SELECT 1 FROM users WHERE role = 'admin')")
 
-database.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Date.now())
-database.prepare('DELETE FROM password_reset_tokens WHERE expires_at <= ?').run(Date.now())
+await db.run('DELETE FROM sessions WHERE expires_at <= ?', Date.now())
+await db.run('DELETE FROM password_reset_tokens WHERE expires_at <= ?', Date.now())
+
+// Deletes a user and everything that belongs to them. Done explicitly because a hosted
+// database connection may not enforce ON DELETE CASCADE.
+export async function deleteUserCascade(userId) {
+  await db.batch([
+    ['DELETE FROM sessions WHERE user_id = ?', userId],
+    ['DELETE FROM password_reset_tokens WHERE user_id = ?', userId],
+    ['DELETE FROM videos WHERE user_id = ?', userId],
+    ['DELETE FROM creator_profiles WHERE user_id = ?', userId],
+    ['UPDATE account_requests SET reviewed_by = NULL WHERE reviewed_by = ?', userId],
+    ['DELETE FROM users WHERE id = ?', userId],
+  ])
+}

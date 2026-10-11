@@ -18,6 +18,15 @@ services:
         value: dwilsonstudios215@gmail.com
       - key: PORTAL_DEMO_PASSWORD
         sync: false
+      # Permanent storage (set these in the Render dashboard):
+      # Turso database for accounts, profile and video entries.
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
+        sync: false
+      # Cloudinary for uploaded videos, thumbnails and profile images (cloudinary://key:secret@cloud).
+      - key: CLOUDINARY_URL
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
       - key: PORTAL_RECOVERY_CODE

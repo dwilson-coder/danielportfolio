@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowUpRight, Check, Clapperboard, Film, KeyRound, LogOut, ShieldCheck, Upload, X } from 'lucide-react'
+import { ArrowUpRight, Check, Clapperboard, Film, KeyRound, Link2, LogOut, ShieldCheck, Upload, X } from 'lucide-react'
 import './portal.css'
 import './dashboard.css'
 
@@ -34,6 +34,34 @@ async function directUpload(form, csrfToken) {
   const result = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(result.error || 'The upload could not be completed.')
   return result
+}
+
+// Uploads a file straight from the browser to Cloudinary using a signature from our API.
+async function uploadToCloudinary(file, purpose, csrfToken, onProgress) {
+  const signed = await api('/media/signature', { method: 'POST', data: { purpose }, csrfToken })
+  const form = new FormData()
+  form.append('file', file)
+  form.append('api_key', signed.apiKey)
+  form.append('timestamp', String(signed.timestamp))
+  form.append('folder', signed.folder)
+  form.append('signature', signed.signature)
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', `https://api.cloudinary.com/v1_1/${signed.cloudName}/${signed.resourceType}/upload`)
+    request.upload.onprogress = (event) => { if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total) }
+    request.onload = () => {
+      let body = {}
+      try { body = JSON.parse(request.responseText) } catch { body = {} }
+      if (request.status >= 200 && request.status < 300) resolve(body)
+      else reject(new Error(body.error?.message ? `Cloudinary: ${body.error.message}` : 'The upload to Cloudinary failed.'))
+    }
+    request.onerror = () => reject(new Error('The upload to Cloudinary failed. Check your connection and try again.'))
+    request.send(form)
+  })
+}
+
+function formatMegabytes(bytes) {
+  return `${Math.round(bytes / (1024 * 1024))} MB`
 }
 
 function makeThumbnail(file) {
@@ -125,7 +153,7 @@ function CodeForm({ code, setCode, busy, error, onSubmit, label = 'Email verific
   </form>
 }
 
-function ProfileEditor({ profile, csrfToken, onSaved }) {
+function ProfileEditor({ profile, csrfToken, onSaved, mediaConfig }) {
   const [displayName, setDisplayName] = useState(profile.displayName)
   const [location, setLocation] = useState(profile.location)
   const [bio, setBio] = useState(profile.bio)
@@ -160,11 +188,20 @@ function ProfileEditor({ profile, csrfToken, onSaved }) {
     if (!image) return
     setError('')
     setNotice('')
+    if (mediaConfig.storage === 'cloudinary' && image.size > mediaConfig.maxImageBytes) {
+      setError(`Profile images must be ${formatMegabytes(mediaConfig.maxImageBytes)} or smaller.`)
+      return
+    }
     setBusy(true)
-    const form = new FormData()
-    form.append('image', image, image.name)
     try {
-      onSaved(await api('/profile/image', { method: 'PUT', csrfToken, data: form }))
+      if (mediaConfig.storage === 'cloudinary') {
+        const uploaded = await uploadToCloudinary(image, 'profile', csrfToken)
+        onSaved(await api('/profile/image/cloudinary', { method: 'PUT', csrfToken, data: { image: uploaded } }))
+      } else {
+        const form = new FormData()
+        form.append('image', image, image.name)
+        onSaved(await api('/profile/image', { method: 'PUT', csrfToken, data: form }))
+      }
       setNotice('Profile image saved. Your About page is updated.')
     } catch (requestError) {
       setError(requestError.message)
@@ -196,21 +233,34 @@ function PortalPage() {
   const [description, setDescription] = useState('')
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState('')
+  const [mediaConfig, setMediaConfig] = useState({ storage: 'local', maxVideoBytes: maxFileSize, maxImageBytes: 8 * 1024 * 1024 })
+  const [addMode, setAddMode] = useState('upload')
+  const [uploadProgress, setUploadProgress] = useState(null)
+  const [youtubeUrl, setYoutubeUrl] = useState('')
+  const [youtubePreview, setYoutubePreview] = useState(null)
+  const [youtubeTitle, setYoutubeTitle] = useState('')
+  const [youtubeDescription, setYoutubeDescription] = useState('')
   const previewRef = useRef('')
+
+  async function loadDashboard(signal) {
+    const [videoResult, profileResult, thumbnailResult, mediaResult] = await Promise.all([
+      api('/videos', { signal }),
+      api('/profile', { signal }),
+      api('/videos/thumbnails', { signal }),
+      api('/media/config', { signal }),
+    ])
+    setVideos(videoResult.videos)
+    setProfile(profileResult)
+    setThumbnailLibrary(thumbnailResult.thumbnails)
+    setMediaConfig(mediaResult)
+  }
 
   useEffect(() => {
     const controller = new AbortController()
     api('/auth/session', { signal: controller.signal })
       .then(async (current) => {
         if (current.state === 'authenticated') {
-          const [videoResult, profileResult, thumbnailResult] = await Promise.all([
-            api('/videos', { signal: controller.signal }),
-            api('/profile', { signal: controller.signal }),
-            api('/videos/thumbnails', { signal: controller.signal }),
-          ])
-          setVideos(videoResult.videos)
-          setProfile(profileResult)
-          setThumbnailLibrary(thumbnailResult.thumbnails)
+          await loadDashboard(controller.signal)
         } else if (['setup_required', 'two_factor_pending'].includes(current.state)) {
           setSession(current)
           await sendEmailCode(current)
@@ -251,10 +301,7 @@ function PortalPage() {
       setCode('')
       setEmailCodeSent(false)
       if (result.state === 'authenticated') {
-        const [videoResult, profileResult, thumbnailResult] = await Promise.all([api('/videos'), api('/profile'), api('/videos/thumbnails')])
-        setVideos(videoResult.videos)
-        setProfile(profileResult)
-        setThumbnailLibrary(thumbnailResult.thumbnails)
+        await loadDashboard()
       } else {
         await sendEmailCode(result)
       }
@@ -285,13 +332,10 @@ function PortalPage() {
     setBusy(true)
     try {
       const result = await api('/auth/email-code/verify', { method: 'POST', data: { code }, csrfToken: session.csrfToken })
-      const [videoResult, profileResult, thumbnailResult] = await Promise.all([api('/videos'), api('/profile'), api('/videos/thumbnails')])
+      await loadDashboard()
       setSession(result)
       setEmailCodeSent(false)
       setCode('')
-      setVideos(videoResult.videos)
-      setProfile(profileResult)
-      setThumbnailLibrary(thumbnailResult.thumbnails)
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -318,8 +362,8 @@ function PortalPage() {
       setError('Choose an MP4, M4V, MOV, or WebM video file.')
       return
     }
-    if (nextFile.size > maxFileSize) {
-      setError('Videos must be 500 MB or smaller.')
+    if (nextFile.size > mediaConfig.maxVideoBytes) {
+      setError(`Videos must be ${formatMegabytes(mediaConfig.maxVideoBytes)} or smaller. For longer films, add a YouTube link instead.`)
       return
     }
     setBusy(true)
@@ -346,40 +390,98 @@ function PortalPage() {
     void chooseFile(event.dataTransfer.files[0])
   }
 
+  function resetUpload() {
+    setFile(null)
+    setThumbnail(null)
+    setTitle('')
+    setDescription('')
+    setDuration(0)
+    setSelectedThumbnailId('generated')
+    setThumbnailPreview('')
+    previewRef.current = ''
+  }
+
+  async function refreshLibrary() {
+    const [videoResult, thumbnailResult] = await Promise.all([api('/videos'), api('/videos/thumbnails')])
+    setVideos(videoResult.videos)
+    setThumbnailLibrary(thumbnailResult.thumbnails)
+  }
+
+  async function chosenThumbnailBlob() {
+    if (selectedThumbnailId === 'generated') return thumbnail
+    const selected = thumbnailLibrary.find((item) => item.id === selectedThumbnailId)
+    if (!selected) throw new Error('Choose a thumbnail again before uploading.')
+    const response = await fetch(selected.thumbnailUrl, { credentials: 'same-origin' })
+    if (!response.ok) throw new Error('The saved thumbnail could not be loaded.')
+    return response.blob()
+  }
+
   async function uploadVideo(event) {
     event.preventDefault()
     if (!file || !thumbnail || !session) return
     setError('')
     setNotice('')
     setBusy(true)
-    const form = new FormData()
-    form.append('title', title)
-    form.append('description', description)
-    form.append('duration', String(duration))
-    form.append('video', file, file.name)
     try {
-      let thumbnailBlob = thumbnail
-      if (selectedThumbnailId !== 'generated') {
+      if (mediaConfig.storage === 'cloudinary') {
+        setUploadProgress(0)
+        const uploadedVideo = await uploadToCloudinary(file, 'video', session.csrfToken, setUploadProgress)
         const selected = thumbnailLibrary.find((item) => item.id === selectedThumbnailId)
-        if (!selected) throw new Error('Choose a thumbnail again before uploading.')
-        const response = await fetch(selected.thumbnailUrl, { credentials: 'same-origin' })
-        if (!response.ok) throw new Error('The saved thumbnail could not be loaded.')
-        thumbnailBlob = await response.blob()
+        const data = { title, description, duration, originalName: file.name, video: uploadedVideo }
+        if (selected && selected.source !== 'file') data.reuseThumbnailOf = selected.id
+        else data.thumbnail = await uploadToCloudinary(await chosenThumbnailBlob(), 'thumbnail', session.csrfToken)
+        await api('/videos/cloudinary', { method: 'POST', data, csrfToken: session.csrfToken })
+      } else {
+        const form = new FormData()
+        form.append('title', title)
+        form.append('description', description)
+        form.append('duration', String(duration))
+        form.append('video', file, file.name)
+        form.append('thumbnail', await chosenThumbnailBlob(), 'thumbnail.jpg')
+        await directUpload(form, session.csrfToken)
       }
-      form.append('thumbnail', thumbnailBlob, 'thumbnail.jpg')
-      await directUpload(form, session.csrfToken)
-      const [videoResult, thumbnailResult] = await Promise.all([api('/videos'), api('/videos/thumbnails')])
-      setVideos(videoResult.videos)
-      setThumbnailLibrary(thumbnailResult.thumbnails)
+      await refreshLibrary()
       setNotice('Video uploaded and added to your library.')
-      setFile(null)
-      setThumbnail(null)
-      setTitle('')
-      setDescription('')
-      setDuration(0)
-      setSelectedThumbnailId('generated')
-      setThumbnailPreview('')
-      previewRef.current = ''
+      resetUpload()
+    } catch (requestError) {
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+      setUploadProgress(null)
+    }
+  }
+
+  async function checkYoutubeLink(event) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    setBusy(true)
+    try {
+      const preview = await api('/videos/youtube/preview', { method: 'POST', data: { url: youtubeUrl }, csrfToken: session.csrfToken })
+      setYoutubePreview(preview)
+      setYoutubeTitle(preview.title || '')
+      setYoutubeDescription('')
+    } catch (requestError) {
+      setYoutubePreview(null)
+      setError(requestError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function addYoutubeVideo(event) {
+    event.preventDefault()
+    setError('')
+    setNotice('')
+    setBusy(true)
+    try {
+      await api('/videos/youtube', { method: 'POST', data: { url: youtubeUrl, title: youtubeTitle, description: youtubeDescription }, csrfToken: session.csrfToken })
+      await refreshLibrary()
+      setNotice('YouTube video added to your library.')
+      setYoutubeUrl('')
+      setYoutubePreview(null)
+      setYoutubeTitle('')
+      setYoutubeDescription('')
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -401,29 +503,50 @@ function PortalPage() {
     {['setup_required', 'two_factor_pending'].includes(session?.state) && <section className="portal-auth"><div className="portal-auth-mark"><ShieldCheck size={20} /><span>EMAIL SECOND FACTOR</span></div><h2>Check your email.</h2><p className="portal-lede">{session.state === 'setup_required' ? 'Verify the first email code to activate email two-factor sign-in.' : 'Enter the latest six-digit sign-in code sent to the designated 2FA email.'}</p>{notice && <p className="portal-success" role="status">{notice}</p>}<CodeForm code={code} setCode={setCode} busy={busy} error={error} onSubmit={verifyCode} label="Email verification code" /><button className="portal-quiet-button resend-email-code" type="button" disabled={busy} onClick={() => sendEmailCode()}>{busy ? 'Sending…' : emailCodeSent ? 'Resend email code' : 'Send email code'} <ArrowUpRight size={15} /></button></section>}
 
     {session?.state === 'authenticated' && <div className="portal-library">
-      <ProfileEditor profile={profile} csrfToken={session.csrfToken} onSaved={setProfile} />
+      <ProfileEditor profile={profile} csrfToken={session.csrfToken} onSaved={setProfile} mediaConfig={mediaConfig} />
       <section className="upload-section">
-        <div className="portal-section-heading"><div><p className="portal-kicker"><span /> ADD TO THE REEL</p><h2>Upload a video.</h2></div><span className="upload-limit">MP4 · M4V · MOV · WEBM / UP TO 500 MB</span></div>
+        <div className="portal-section-heading"><div><p className="portal-kicker"><span /> ADD TO THE REEL</p><h2>{addMode === 'youtube' ? 'Link a YouTube video.' : 'Upload a video.'}</h2></div><span className="upload-limit">{addMode === 'youtube' ? 'PUBLIC OR UNLISTED YOUTUBE VIDEOS' : `MP4 · M4V · MOV · WEBM / UP TO ${formatMegabytes(mediaConfig.maxVideoBytes)}`}</span></div>
+        <div className="add-mode-switch" role="tablist" aria-label="How to add a video">
+          <button type="button" role="tab" aria-selected={addMode === 'upload'} className={addMode === 'upload' ? 'add-mode is-active' : 'add-mode'} onClick={() => { setAddMode('upload'); setError(''); setNotice('') }}><Upload size={15} /> Upload a file</button>
+          <button type="button" role="tab" aria-selected={addMode === 'youtube'} className={addMode === 'youtube' ? 'add-mode is-active' : 'add-mode'} onClick={() => { setAddMode('youtube'); setError(''); setNotice('') }}><Link2 size={15} /> YouTube link</button>
+        </div>
+        {addMode === 'youtube' && <div className="youtube-add">
+          <form className="youtube-link-form" onSubmit={checkYoutubeLink}>
+            <label>YouTube link<input type="url" inputMode="url" value={youtubeUrl} onChange={(event) => { setYoutubeUrl(event.target.value); setYoutubePreview(null) }} placeholder="https://www.youtube.com/watch?v=…" required /></label>
+            <button className="portal-button portal-button-orange" type="submit" disabled={busy || !youtubeUrl.trim()}>{busy && !youtubePreview ? 'Checking…' : 'Check link'} <ArrowUpRight size={16} /></button>
+          </form>
+          {youtubePreview && <form className="upload-preview youtube-preview" onSubmit={addYoutubeVideo}>
+            <img src={youtubePreview.thumbnailUrl} alt="YouTube video thumbnail" />
+            <div className="upload-preview-info"><label>Project title<input value={youtubeTitle} maxLength={140} onChange={(event) => setYoutubeTitle(event.target.value)} required /></label><small>{youtubeTitle.length}/140</small><p>YouTube{youtubePreview.author ? ` · ${youtubePreview.author}` : ''} · plays on your site through YouTube</p></div>
+            <button className="portal-button portal-button-orange" type="submit" disabled={busy || !youtubeTitle.trim()}>{busy ? 'Saving…' : 'Add to library'} <Check size={16} /></button>
+            <button className="remove-file" type="button" aria-label="Clear YouTube link" onClick={() => { setYoutubePreview(null); setYoutubeUrl('') }}><X size={18} /></button>
+            <label className="upload-description">Description<textarea value={youtubeDescription} maxLength={1200} rows={4} onChange={(event) => setYoutubeDescription(event.target.value)} /><small>{youtubeDescription.length}/1200 characters</small></label>
+          </form>}
+        </div>}
+        {addMode === 'upload' && <>
         <input id="video-upload" className="visually-hidden" type="file" accept=".mp4,.m4v,.mov,.webm,video/mp4,video/x-m4v,video/quicktime,video/webm" onChange={(event) => void chooseFile(event.target.files[0])} />
         <label className={`drop-zone${dragging ? ' is-dragging' : ''}`} htmlFor="video-upload" onDragOver={(event) => { event.preventDefault(); setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={handleDrop}><span className="drop-icon"><Upload size={20} /></span><strong>Drop a video here, or browse files</strong><span>MP4, M4V, MOV, or WebM. Thumbnail generated from a video frame.</span></label>
         {file && thumbnailPreview && <form className="upload-preview" onSubmit={uploadVideo}>
           <img src={selectedThumbnail} alt="Selected video thumbnail" />
           <div className="upload-preview-info"><label>Project title<input value={title} maxLength={140} onChange={(event) => setTitle(event.target.value)} required /></label><small>{title.length}/140</small><p>{file.name} · {formatDuration(duration)} · {(file.size / (1024 * 1024)).toFixed(1)} MB</p></div>
-          <button className="portal-button portal-button-orange" type="submit" disabled={busy || !title.trim()}>{busy ? 'Uploading…' : 'Upload video'} <Upload size={16} /></button>
-          <button className="remove-file" type="button" aria-label="Remove selected video" onClick={() => { setFile(null); setThumbnail(null); setThumbnailPreview(''); previewRef.current = ''; setDuration(0); setDescription(''); setSelectedThumbnailId('generated') }}><X size={18} /></button>
+          <button className="portal-button portal-button-orange" type="submit" disabled={busy || !title.trim()}>{busy ? (uploadProgress !== null ? `Uploading ${Math.round(uploadProgress * 100)}%` : 'Uploading…') : 'Upload video'} <Upload size={16} /></button>
+          <button className="remove-file" type="button" aria-label="Remove selected video" disabled={busy} onClick={resetUpload}><X size={18} /></button>
           <label className="upload-description">Description<textarea value={description} maxLength={1200} rows={4} onChange={(event) => setDescription(event.target.value)} /><small>{description.length}/1200 characters</small></label>
           <div className="thumbnail-library"><span className="thumbnail-library-title">CHOOSE A THUMBNAIL</span><div className="thumbnail-options">
             <button className={selectedThumbnailId === 'generated' ? 'thumbnail-option selected' : 'thumbnail-option'} type="button" aria-pressed={selectedThumbnailId === 'generated'} onClick={() => setSelectedThumbnailId('generated')}><img src={thumbnailPreview} alt="Newly generated frame" /><span>New frame</span></button>
             {thumbnailLibrary.map((item) => <button key={item.id} className={selectedThumbnailId === item.id ? 'thumbnail-option selected' : 'thumbnail-option'} type="button" aria-pressed={selectedThumbnailId === item.id} onClick={() => setSelectedThumbnailId(item.id)}><img src={item.thumbnailUrl} alt={`${item.title} thumbnail`} /><span>{item.title}</span></button>)}
           </div></div>
         </form>}
+        </>}
         {error && <p className="portal-error" role="alert">{error}</p>}{notice && <p className="portal-success" role="status"><Check size={16} /> {notice}</p>}
       </section>
 
-      <section className="library-section"><div className="portal-section-heading"><div><p className="portal-kicker"><span /> YOUR UPLOADS</p><h2>In the library <span>{String(videos.length).padStart(2, '0')}</span></h2></div></div>{videos.length === 0 ? <div className="empty-library"><Film size={22} /><p>Your uploaded films will appear here.</p></div> : <div className="uploaded-grid">{videos.map((video) => <article className="uploaded-card" key={video.id}><div className="uploaded-poster"><img src={video.thumbnailUrl} alt={`${video.title} thumbnail`} /><span>{formatDuration(video.duration_seconds)}</span></div><h3>{video.title}</h3><p>{video.description}</p><p>{new Date(`${video.created_at.replace(' ', 'T')}Z`).toLocaleDateString()} · {(video.size_bytes / (1024 * 1024)).toFixed(1)} MB</p><video className="uploaded-player" controls playsInline preload="none" poster={video.thumbnailUrl} src={video.videoUrl} aria-label={`Watch ${video.title}`} /></article>)}</div>}</section>
+      <section className="library-section"><div className="portal-section-heading"><div><p className="portal-kicker"><span /> YOUR UPLOADS</p><h2>In the library <span>{String(videos.length).padStart(2, '0')}</span></h2></div></div>{videos.length === 0 ? <div className="empty-library"><Film size={22} /><p>Your uploaded and linked films will appear here.</p></div> : <div className="uploaded-grid">{videos.map((video) => <article className="uploaded-card" key={video.id}><div className="uploaded-poster"><img src={video.thumbnailUrl} alt={`${video.title} thumbnail`} /><span>{video.source === 'youtube' ? 'YOUTUBE' : formatDuration(video.duration_seconds)}</span></div><h3>{video.title}</h3><p>{video.description}</p><p>{new Date(`${video.created_at.replace(' ', 'T')}Z`).toLocaleDateString()} · {video.source === 'youtube' ? 'YouTube link' : `${(video.size_bytes / (1024 * 1024)).toFixed(1)} MB`}</p>{video.source === 'youtube'
+          ? <a className="uploaded-player uploaded-youtube-link" href={video.watchUrl} target="_blank" rel="noreferrer">Watch on YouTube <ArrowUpRight size={13} /></a>
+          : <video className="uploaded-player" controls playsInline preload="none" poster={video.thumbnailUrl} src={video.videoUrl} aria-label={`Watch ${video.title}`} />}</article>)}</div>}</section>
     </div>}
 
-    <p className="portal-footnote"><Clapperboard size={14} /> PRIVATE LIBRARY · EMAIL TWO-FACTOR PROTECTED</p>
+    <p className="portal-footnote"><Clapperboard size={14} /> PRIVATE LIBRARY</p>
   </main>
 }
 
