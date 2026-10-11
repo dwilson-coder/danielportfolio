@@ -236,10 +236,11 @@ function PortalPage() {
   const [mediaConfig, setMediaConfig] = useState({ storage: 'local', maxVideoBytes: maxFileSize, maxImageBytes: 8 * 1024 * 1024 })
   const [addMode, setAddMode] = useState('upload')
   const [uploadProgress, setUploadProgress] = useState(null)
-  const [youtubeUrl, setYoutubeUrl] = useState('')
-  const [youtubePreview, setYoutubePreview] = useState(null)
-  const [youtubeTitle, setYoutubeTitle] = useState('')
-  const [youtubeDescription, setYoutubeDescription] = useState('')
+  const [linkUrl, setLinkUrl] = useState('')
+  const [linkPreview, setLinkPreview] = useState(null)
+  const [linkTitle, setLinkTitle] = useState('')
+  const [linkDescription, setLinkDescription] = useState('')
+  const [linkThumbnail, setLinkThumbnail] = useState('')
   const previewRef = useRef('')
 
   async function loadDashboard(signal) {
@@ -451,37 +452,43 @@ function PortalPage() {
     }
   }
 
-  async function checkYoutubeLink(event) {
+  function clearLink() {
+    setLinkUrl('')
+    setLinkPreview(null)
+    setLinkTitle('')
+    setLinkDescription('')
+    setLinkThumbnail('')
+  }
+
+  async function checkVideoLink(event) {
     event.preventDefault()
     setError('')
     setNotice('')
     setBusy(true)
     try {
-      const preview = await api('/videos/youtube/preview', { method: 'POST', data: { url: youtubeUrl }, csrfToken: session.csrfToken })
-      setYoutubePreview(preview)
-      setYoutubeTitle(preview.title || '')
-      setYoutubeDescription('')
+      const preview = await api('/videos/link/preview', { method: 'POST', data: { url: linkUrl }, csrfToken: session.csrfToken })
+      setLinkPreview(preview)
+      setLinkTitle(preview.title || '')
+      setLinkDescription('')
+      setLinkThumbnail('')
     } catch (requestError) {
-      setYoutubePreview(null)
+      setLinkPreview(null)
       setError(requestError.message)
     } finally {
       setBusy(false)
     }
   }
 
-  async function addYoutubeVideo(event) {
+  async function addVideoLink(event) {
     event.preventDefault()
     setError('')
     setNotice('')
     setBusy(true)
     try {
-      await api('/videos/youtube', { method: 'POST', data: { url: youtubeUrl, title: youtubeTitle, description: youtubeDescription }, csrfToken: session.csrfToken })
+      await api('/videos/link', { method: 'POST', data: { url: linkUrl, title: linkTitle, description: linkDescription, thumbnailUrl: linkThumbnail }, csrfToken: session.csrfToken })
       await refreshLibrary()
-      setNotice('YouTube video added to your library.')
-      setYoutubeUrl('')
-      setYoutubePreview(null)
-      setYoutubeTitle('')
-      setYoutubeDescription('')
+      setNotice(`${linkPreview.providerName} video added to your library.`)
+      clearLink()
     } catch (requestError) {
       setError(requestError.message)
     } finally {
@@ -505,22 +512,23 @@ function PortalPage() {
     {session?.state === 'authenticated' && <div className="portal-library">
       <ProfileEditor profile={profile} csrfToken={session.csrfToken} onSaved={setProfile} mediaConfig={mediaConfig} />
       <section className="upload-section">
-        <div className="portal-section-heading"><div><p className="portal-kicker"><span /> ADD TO THE REEL</p><h2>{addMode === 'youtube' ? 'Link a YouTube video.' : 'Upload a video.'}</h2></div><span className="upload-limit">{addMode === 'youtube' ? 'PUBLIC OR UNLISTED YOUTUBE VIDEOS' : `MP4 · M4V · MOV · WEBM / UP TO ${formatMegabytes(mediaConfig.maxVideoBytes)}`}</span></div>
+        <div className="portal-section-heading"><div><p className="portal-kicker"><span /> ADD TO THE REEL</p><h2>{addMode === 'link' ? 'Add a video link.' : 'Upload a video.'}</h2></div><span className="upload-limit">{addMode === 'link' ? 'YOUTUBE · VIMEO · DAILYMOTION · LOOM · STREAMABLE · ANY LINK' : `MP4 · M4V · MOV · WEBM / UP TO ${formatMegabytes(mediaConfig.maxVideoBytes)}`}</span></div>
         <div className="add-mode-switch" role="tablist" aria-label="How to add a video">
           <button type="button" role="tab" aria-selected={addMode === 'upload'} className={addMode === 'upload' ? 'add-mode is-active' : 'add-mode'} onClick={() => { setAddMode('upload'); setError(''); setNotice('') }}><Upload size={15} /> Upload a file</button>
-          <button type="button" role="tab" aria-selected={addMode === 'youtube'} className={addMode === 'youtube' ? 'add-mode is-active' : 'add-mode'} onClick={() => { setAddMode('youtube'); setError(''); setNotice('') }}><Link2 size={15} /> YouTube link</button>
+          <button type="button" role="tab" aria-selected={addMode === 'link'} className={addMode === 'link' ? 'add-mode is-active' : 'add-mode'} onClick={() => { setAddMode('link'); setError(''); setNotice('') }}><Link2 size={15} /> Video link</button>
         </div>
-        {addMode === 'youtube' && <div className="youtube-add">
-          <form className="youtube-link-form" onSubmit={checkYoutubeLink}>
-            <label>YouTube link<input type="url" inputMode="url" value={youtubeUrl} onChange={(event) => { setYoutubeUrl(event.target.value); setYoutubePreview(null) }} placeholder="https://www.youtube.com/watch?v=…" required /></label>
-            <button className="portal-button portal-button-orange" type="submit" disabled={busy || !youtubeUrl.trim()}>{busy && !youtubePreview ? 'Checking…' : 'Check link'} <ArrowUpRight size={16} /></button>
+        {addMode === 'link' && <div className="youtube-add">
+          <form className="youtube-link-form" onSubmit={checkVideoLink}>
+            <label>Video URL<input type="url" inputMode="url" value={linkUrl} onChange={(event) => { setLinkUrl(event.target.value); setLinkPreview(null) }} placeholder="https://vimeo.com/… · https://youtu.be/… · https://example.com/film.mp4" required /><small>YouTube, Vimeo, Dailymotion, Loom, Streamable, a direct .mp4 or .webm file, or any page that hosts your video.</small></label>
+            <button className="portal-button portal-button-orange" type="submit" disabled={busy || !linkUrl.trim()}>{busy && !linkPreview ? 'Checking…' : 'Check link'} <ArrowUpRight size={16} /></button>
           </form>
-          {youtubePreview && <form className="upload-preview youtube-preview" onSubmit={addYoutubeVideo}>
-            <img src={youtubePreview.thumbnailUrl} alt="YouTube video thumbnail" />
-            <div className="upload-preview-info"><label>Project title<input value={youtubeTitle} maxLength={140} onChange={(event) => setYoutubeTitle(event.target.value)} required /></label><small>{youtubeTitle.length}/140</small><p>YouTube{youtubePreview.author ? ` · ${youtubePreview.author}` : ''} · plays on your site through YouTube</p></div>
-            <button className="portal-button portal-button-orange" type="submit" disabled={busy || !youtubeTitle.trim()}>{busy ? 'Saving…' : 'Add to library'} <Check size={16} /></button>
-            <button className="remove-file" type="button" aria-label="Clear YouTube link" onClick={() => { setYoutubePreview(null); setYoutubeUrl('') }}><X size={18} /></button>
-            <label className="upload-description">Description<textarea value={youtubeDescription} maxLength={1200} rows={4} onChange={(event) => setYoutubeDescription(event.target.value)} /><small>{youtubeDescription.length}/1200 characters</small></label>
+          {linkPreview && <form className="upload-preview youtube-preview" onSubmit={addVideoLink}>
+            <img src={linkThumbnail.trim() || linkPreview.thumbnailUrl || '/og.jpg'} alt="Video thumbnail" onError={(event) => { event.currentTarget.src = '/og.jpg' }} />
+            <div className="upload-preview-info"><label>Project title<input value={linkTitle} maxLength={140} onChange={(event) => setLinkTitle(event.target.value)} required /></label><small>{linkTitle.length}/140</small><p>{linkPreview.providerName}{linkPreview.author ? ` · ${linkPreview.author}` : ''}{linkPreview.durationSeconds ? ` · ${formatDuration(linkPreview.durationSeconds)}` : ''} · {linkPreview.embedUrl || linkPreview.videoUrl ? 'plays on your site' : 'opens on the original site'}</p></div>
+            <button className="portal-button portal-button-orange" type="submit" disabled={busy || !linkTitle.trim()}>{busy ? 'Saving…' : 'Add to library'} <Check size={16} /></button>
+            <button className="remove-file" type="button" aria-label="Clear video link" onClick={clearLink}><X size={18} /></button>
+            <label className="upload-description">Thumbnail image URL (optional)<input className="link-thumbnail-input" type="url" inputMode="url" value={linkThumbnail} onChange={(event) => setLinkThumbnail(event.target.value)} placeholder={linkPreview.thumbnailUrl ? 'Leave empty to use the thumbnail shown' : 'https://… .jpg or .png'} /><small>{linkPreview.thumbnailUrl ? 'Replaces the thumbnail found for this video.' : 'No thumbnail was found for this link, so a default image is used unless you add one.'}</small></label>
+            <label className="upload-description">Description<textarea value={linkDescription} maxLength={1200} rows={4} onChange={(event) => setLinkDescription(event.target.value)} /><small>{linkDescription.length}/1200 characters</small></label>
           </form>}
         </div>}
         {addMode === 'upload' && <>
@@ -541,8 +549,8 @@ function PortalPage() {
         {error && <p className="portal-error" role="alert">{error}</p>}{notice && <p className="portal-success" role="status"><Check size={16} /> {notice}</p>}
       </section>
 
-      <section className="library-section"><div className="portal-section-heading"><div><p className="portal-kicker"><span /> YOUR UPLOADS</p><h2>In the library <span>{String(videos.length).padStart(2, '0')}</span></h2></div></div>{videos.length === 0 ? <div className="empty-library"><Film size={22} /><p>Your uploaded and linked films will appear here.</p></div> : <div className="uploaded-grid">{videos.map((video) => <article className="uploaded-card" key={video.id}><div className="uploaded-poster"><img src={video.thumbnailUrl} alt={`${video.title} thumbnail`} /><span>{video.source === 'youtube' ? 'YOUTUBE' : formatDuration(video.duration_seconds)}</span></div><h3>{video.title}</h3><p>{video.description}</p><p>{new Date(`${video.created_at.replace(' ', 'T')}Z`).toLocaleDateString()} · {video.source === 'youtube' ? 'YouTube link' : `${(video.size_bytes / (1024 * 1024)).toFixed(1)} MB`}</p>{video.source === 'youtube'
-          ? <a className="uploaded-player uploaded-youtube-link" href={video.watchUrl} target="_blank" rel="noreferrer">Watch on YouTube <ArrowUpRight size={13} /></a>
+      <section className="library-section"><div className="portal-section-heading"><div><p className="portal-kicker"><span /> YOUR UPLOADS</p><h2>In the library <span>{String(videos.length).padStart(2, '0')}</span></h2></div></div>{videos.length === 0 ? <div className="empty-library"><Film size={22} /><p>Your uploaded and linked films will appear here.</p></div> : <div className="uploaded-grid">{videos.map((video) => <article className="uploaded-card" key={video.id}><div className="uploaded-poster"><img src={video.thumbnailUrl} alt={`${video.title} thumbnail`} /><span>{video.source === 'link' ? (video.duration_seconds > 0 ? formatDuration(video.duration_seconds) : video.providerName.toUpperCase()) : formatDuration(video.duration_seconds)}</span></div><h3>{video.title}</h3><p>{video.description}</p><p>{new Date(`${video.created_at.replace(' ', 'T')}Z`).toLocaleDateString()} · {video.source === 'link' ? `${video.providerName} link` : `${(video.size_bytes / (1024 * 1024)).toFixed(1)} MB`}</p>{video.source === 'link'
+          ? <a className="uploaded-player uploaded-youtube-link" href={video.watchUrl} target="_blank" rel="noreferrer">Open on {video.providerName} <ArrowUpRight size={13} /></a>
           : <video className="uploaded-player" controls playsInline preload="none" poster={video.thumbnailUrl} src={video.videoUrl} aria-label={`Watch ${video.title}`} />}</article>)}</div>}</section>
     </div>}
 

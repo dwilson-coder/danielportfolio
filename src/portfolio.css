@@ -55,3 +55,4 @@ body{background:#171916;color:#eeeee8}
 .share-thumb img { width: 160px; border-radius: 8px; aspect-ratio: 16/9; object-fit: cover; }
 
 .uploaded-by{margin:10px 0 0;color:var(--ink);font-size:15px}.uploaded-by strong{font-weight:700}.original-file-name{margin:8px 0 0;color:var(--soft-ink);font-size:11px;overflow-wrap:anywhere}.original-file-name span{margin-right:6px;color:#797970;font-size:8px;font-weight:700;letter-spacing:.12em}
+.player-external{position:relative;display:block;width:100%;height:100%;color:white}.player-external img{width:100%;height:100%;object-fit:cover;opacity:.75}.player-external span{position:absolute;left:50%;top:50%;display:inline-flex;align-items:center;gap:9px;padding:13px 18px;background:rgba(20,21,18,.82);font-size:12px;font-weight:700;letter-spacing:.04em;transform:translate(-50%,-50%);transition:background .2s}.player-external:hover span{background:#d95f47}

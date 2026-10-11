@@ -28,7 +28,7 @@ Vite serves the site on port `5173` and proxies `/api` to the Express API on por
 ## Creator dashboard
 
 - Edit the public display name, Pittsburgh location, bio, tags, and profile image. Limits are 80 characters for name, 100 for location, 600 for bio, and 8 tags of up to 24 characters each.
-- Drag and drop or browse for MP4, M4V, MOV, or WebM videos (up to 100 MB on Cloudinary's free plan, 500 MB on local disk), or paste a YouTube link instead. The browser generates a thumbnail from a decoded video frame; YouTube links use the video's own thumbnail.
+- Drag and drop or browse for MP4, M4V, MOV, or WebM videos (up to 100 MB on Cloudinary's free plan, 500 MB on local disk), or add a video link instead: YouTube, Vimeo, Dailymotion, Loom, and Streamable links play in an embedded player, direct `.mp4`/`.webm` links play in the site's own player, and any other page shows a thumbnail that opens the original site. The browser generates a thumbnail from a decoded video frame; links use the service's thumbnail or an optional thumbnail URL.
 - Pick the generated frame or reuse a thumbnail from the creator's library. Add a title (up to 140 characters) and description (up to 1,200 characters).
 - Uploaded projects are published to the homepage gallery and have their own watch/detail pages. Video playback supports HTTP byte-range requests for seeking.
 

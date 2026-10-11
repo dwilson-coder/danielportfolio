@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createReadStream, mkdirSync, renameSync, rmSync, statSync } from 'node:fs'
+import { lookup } from 'node:dns/promises'
 import { createServer } from 'node:http'
 import { dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -51,9 +52,10 @@ app.use(helmet({
       fontSrc: ["'self'", 'https://fonts.gstatic.com'],
       formAction: ["'self'"],
       frameAncestors: ["'none'"],
-      frameSrc: ['https://www.youtube-nocookie.com', 'https://www.youtube.com'],
-      imgSrc: ["'self'", 'data:', 'blob:', 'https://images.unsplash.com', 'https://res.cloudinary.com', 'https://i.ytimg.com'],
-      mediaSrc: ["'self'", 'blob:', 'https://media.w3.org', 'https://interactive-examples.mdn.mozilla.net', 'https://res.cloudinary.com'],
+      frameSrc: ['https://www.youtube-nocookie.com', 'https://www.youtube.com', 'https://player.vimeo.com', 'https://www.dailymotion.com', 'https://www.loom.com', 'https://streamable.com'],
+      // Linked videos and their thumbnails can come from any https site.
+      imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+      mediaSrc: ["'self'", 'blob:', 'https:'],
       objectSrc: ["'none'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
@@ -469,12 +471,24 @@ function streamVideoRange(req, res, video) {
 function videoMedia(video, scope) {
   if (video.source === 'youtube') {
     return {
-      source: 'youtube',
-      youtubeId: video.youtube_id,
+      source: 'link',
+      provider: 'youtube',
+      providerName: 'YouTube',
       videoUrl: null,
-      embedUrl: `https://www.youtube-nocookie.com/embed/${video.youtube_id}`,
+      embedUrl: `https://www.youtube-nocookie.com/embed/${video.youtube_id}?rel=0`,
       watchUrl: `https://www.youtube.com/watch?v=${video.youtube_id}`,
       thumbnailUrl: video.thumbnail_url || `https://i.ytimg.com/vi/${video.youtube_id}/hqdefault.jpg`,
+    }
+  }
+  if (video.source === 'link') {
+    return {
+      source: 'link',
+      provider: video.provider,
+      providerName: linkProviders[video.provider]?.name || 'Link',
+      videoUrl: video.video_url || null,
+      embedUrl: video.embed_url || null,
+      watchUrl: video.external_url,
+      thumbnailUrl: video.thumbnail_url || '/og.jpg',
     }
   }
   if (video.source === 'cloudinary') return { source: 'cloudinary', videoUrl: video.video_url, thumbnailUrl: video.thumbnail_url }
@@ -653,7 +667,7 @@ router.get('/videos/export', loadSession, requireTwoFactor, async (req, res) => 
       created_at: video.created_at,
       source: media.source,
       fileUrl: media.videoUrl,
-      youtubeUrl: media.watchUrl || null,
+      linkUrl: media.watchUrl || null,
       thumbnailUrl: media.thumbnailUrl,
     }
   })
@@ -741,60 +755,209 @@ router.post('/videos/cloudinary', loadSession, requireCsrf, requireTwoFactor, as
   return res.status(201).json({ video: privateVideoPayload(await db.get('SELECT * FROM videos WHERE id = ?', id)) })
 })
 
-// ---- YouTube links ----
+// ---- Video links (YouTube, Vimeo, Dailymotion, Loom, Streamable, direct files, any web page) ----
 
-function youtubeIdFrom(input) {
-  if (typeof input !== 'string') return null
-  const value = input.trim()
-  if (/^[A-Za-z0-9_-]{11}$/.test(value)) return value
-  let url
-  try { url = new URL(value) } catch { return null }
-  const host = url.hostname.replace(/^www\.|^m\.|^music\./, '')
+const videoFileExtensions = /\.(mp4|m4v|webm|mov|ogv|ogg)$/i
+const linkProviders = {
+  youtube: { name: 'YouTube', oembed: (url) => `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(url)}` },
+  vimeo: { name: 'Vimeo', oembed: (url) => `https://vimeo.com/api/oembed.json?url=${encodeURIComponent(url)}` },
+  dailymotion: { name: 'Dailymotion', oembed: (url) => `https://www.dailymotion.com/services/oembed?format=json&url=${encodeURIComponent(url)}` },
+  loom: { name: 'Loom', oembed: (url) => `https://www.loom.com/v1/oembed?format=json&url=${encodeURIComponent(url)}` },
+  streamable: { name: 'Streamable', oembed: (url) => `https://api.streamable.com/oembed.json?url=${encodeURIComponent(url)}` },
+  file: { name: 'Video file' },
+  page: { name: 'Web page' },
+}
+
+function youtubeIdFrom(url) {
+  const host = url.hostname.replace(/^(www|m|music)\./, '')
   let id = null
   if (host === 'youtu.be') id = url.pathname.slice(1).split('/')[0]
   else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
     if (url.pathname === '/watch') id = url.searchParams.get('v')
-    else {
-      const match = /^\/(?:embed|shorts|live|v)\/([^/?#]+)/.exec(url.pathname)
-      id = match?.[1] || null
-    }
+    else id = /^\/(?:embed|shorts|live|v)\/([^/?#]+)/.exec(url.pathname)?.[1] || null
   }
   return id && /^[A-Za-z0-9_-]{11}$/.test(id) ? id : null
 }
 
-async function youtubeDetails(youtubeId) {
+// Works out which service a link belongs to and how to play it.
+function classifyVideoLink(input) {
+  if (typeof input !== 'string' || input.trim().length > 2000) return null
+  const raw = input.trim()
+  if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return classifyVideoLink(`https://www.youtube.com/watch?v=${raw}`)
+  let url
+  try { url = new URL(raw) } catch { return null }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+  const host = url.hostname.replace(/^www\./, '').toLowerCase()
+
+  const youtubeId = youtubeIdFrom(url)
+  if (youtubeId) {
+    return { provider: 'youtube', providerId: youtubeId, watchUrl: `https://www.youtube.com/watch?v=${youtubeId}`, embedUrl: `https://www.youtube-nocookie.com/embed/${youtubeId}?rel=0`, thumbnailUrl: `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` }
+  }
+  if (host === 'vimeo.com' || host === 'player.vimeo.com') {
+    const match = host === 'player.vimeo.com'
+      ? /^\/video\/(\d+)/.exec(url.pathname)
+      : /^\/(?:channels\/[^/]+\/|groups\/[^/]+\/videos\/|showcase\/\d+\/video\/)?(\d+)(?:\/([0-9a-f]+))?/.exec(url.pathname)
+    if (match) {
+      const hash = match[2] || url.searchParams.get('h')
+      return { provider: 'vimeo', providerId: match[1], watchUrl: `https://vimeo.com/${match[1]}${hash ? `/${hash}` : ''}`, embedUrl: `https://player.vimeo.com/video/${match[1]}${hash ? `?h=${hash}` : ''}`, thumbnailUrl: null }
+    }
+  }
+  if (host === 'dailymotion.com' || host === 'dai.ly') {
+    const id = host === 'dai.ly' ? url.pathname.slice(1) : /^\/(?:embed\/)?video\/([a-zA-Z0-9]+)/.exec(url.pathname)?.[1]
+    if (id && /^[a-zA-Z0-9]+$/.test(id)) return { provider: 'dailymotion', providerId: id, watchUrl: `https://www.dailymotion.com/video/${id}`, embedUrl: `https://www.dailymotion.com/embed/video/${id}`, thumbnailUrl: `https://www.dailymotion.com/thumbnail/video/${id}` }
+  }
+  if (host === 'loom.com') {
+    const id = /^\/(?:share|embed)\/([0-9a-f]{20,})/.exec(url.pathname)?.[1]
+    if (id) return { provider: 'loom', providerId: id, watchUrl: `https://www.loom.com/share/${id}`, embedUrl: `https://www.loom.com/embed/${id}`, thumbnailUrl: null }
+  }
+  if (host === 'streamable.com') {
+    const id = /^\/(?:e\/|o\/)?([a-z0-9]+)$/i.exec(url.pathname)?.[1]
+    if (id) return { provider: 'streamable', providerId: id, watchUrl: `https://streamable.com/${id}`, embedUrl: `https://streamable.com/e/${id}`, thumbnailUrl: null }
+  }
+  if (url.protocol === 'https:' && videoFileExtensions.test(url.pathname)) {
+    return { provider: 'file', providerId: null, watchUrl: url.href, embedUrl: null, videoUrl: url.href, thumbnailUrl: null }
+  }
+  return { provider: 'page', providerId: null, watchUrl: url.href, embedUrl: null, thumbnailUrl: null }
+}
+
+function isPrivateAddress(address) {
+  if (address.includes(':')) {
+    const value = address.toLowerCase()
+    return value === '::1' || value === '::' || value.startsWith('fc') || value.startsWith('fd') || value.startsWith('fe80') || value.startsWith('::ffff:127.') || value.startsWith('::ffff:10.') || value.startsWith('::ffff:192.168.')
+  }
+  const [a, b] = address.split('.').map(Number)
+  return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)
+}
+
+// Fetches a public URL from the server with a timeout and size cap, refusing private network addresses.
+async function fetchPublic(target, { method = 'GET', maxBytes = 512 * 1024 } = {}) {
+  let url = new URL(target)
+  let response
+  for (let hop = 0; hop < 4; hop++) {
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null
+    const addresses = await lookup(url.hostname, { all: true }).catch(() => [])
+    if (!addresses.length || addresses.some(({ address }) => isPrivateAddress(address))) return null
+    response = await fetch(url, { method, redirect: 'manual', signal: AbortSignal.timeout(6000), headers: { 'User-Agent': 'Mozilla/5.0 (compatible; FrameByFramePortfolio/1.0)', Accept: 'text/html,application/json;q=0.9,*/*;q=0.5' } })
+    const location = response.status >= 300 && response.status < 400 && response.headers.get('location')
+    if (!location) break
+    url = new URL(location, url)
+    if (hop === 3) return null
+  }
+  if (method === 'HEAD' || !response.body) return { response, text: '' }
+  const reader = response.body.getReader()
+  const chunks = []
+  let size = 0
+  while (size < maxBytes) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    size += value.length
+  }
+  reader.cancel().catch(() => {})
+  return { response, text: Buffer.concat(chunks).toString('utf8') }
+}
+
+function metaContent(html, property) {
+  const pattern = new RegExp(`<meta[^>]+(?:property|name)=["']${property}["'][^>]*>`, 'i')
+  const tag = pattern.exec(html)?.[0]
+  const value = tag && /content=["']([^"']*)["']/i.exec(tag)?.[1]
+  return value ? value.replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').trim() : ''
+}
+
+function httpsUrlOrNull(value) {
   try {
-    const response = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(`https://www.youtube.com/watch?v=${youtubeId}`)}`, { signal: AbortSignal.timeout(5000) })
-    if (response.status === 401 || response.status === 403) return { embeddable: false }
-    if (response.status === 404 || response.status === 400) return { missing: true }
-    if (!response.ok) return {}
-    const details = await response.json()
-    return { title: typeof details.title === 'string' ? details.title.slice(0, 140) : '', author: details.author_name || '' }
+    const url = new URL(value)
+    return url.protocol === 'https:' ? url.href : null
   } catch {
-    return {}
+    return null
   }
 }
 
-router.post('/videos/youtube/preview', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
-  const youtubeId = youtubeIdFrom(req.body.url)
-  if (!youtubeId) return res.status(400).json({ error: 'Paste a YouTube link, like https://www.youtube.com/watch?v=… or https://youtu.be/….' })
-  const details = await youtubeDetails(youtubeId)
-  if (details.missing) return res.status(404).json({ error: 'That YouTube video could not be found. Check that it is public or unlisted.' })
-  if (details.embeddable === false) return res.status(422).json({ error: 'That video does not allow embedding on other sites.' })
-  return res.json({ youtubeId, title: details.title || '', author: details.author || '', thumbnailUrl: `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg` })
+// Fills in title, thumbnail and duration from the service, when it will tell us.
+async function linkDetails(link) {
+  const provider = linkProviders[link.provider]
+  const details = { title: '', author: '', thumbnailUrl: link.thumbnailUrl, durationSeconds: 0 }
+  try {
+    if (provider.oembed) {
+      const result = await fetchPublic(provider.oembed(link.watchUrl))
+      if (result?.response.status === 404) return { ...details, missing: true }
+      if (result?.response.status === 401 || result?.response.status === 403) return { ...details, private: true }
+      if (result?.response.ok) {
+        const data = JSON.parse(result.text)
+        details.title = typeof data.title === 'string' ? data.title.slice(0, 140) : ''
+        details.author = typeof data.author_name === 'string' ? data.author_name : ''
+        details.thumbnailUrl = details.thumbnailUrl || httpsUrlOrNull(data.thumbnail_url)
+        details.durationSeconds = Number(data.duration) > 0 ? Number(data.duration) : 0
+      }
+    } else if (link.provider === 'page') {
+      const result = await fetchPublic(link.watchUrl)
+      const type = result?.response.headers.get('content-type') || ''
+      if (type.startsWith('video/')) return { ...details, provider: 'file', videoUrl: link.watchUrl }
+      if (result?.response.ok && type.includes('html')) {
+        details.title = (metaContent(result.text, 'og:title') || /<title[^>]*>([^<]*)<\/title>/i.exec(result.text)?.[1] || '').trim().slice(0, 140)
+        const image = metaContent(result.text, 'og:image') || metaContent(result.text, 'twitter:image')
+        details.thumbnailUrl = image ? httpsUrlOrNull(new URL(image, link.watchUrl).href) : null
+      }
+    }
+  } catch {
+    // Details are optional; the link still works without them.
+  }
+  return details
+}
+
+async function resolveVideoLink(input) {
+  const link = classifyVideoLink(input)
+  if (!link) return { error: 'Paste a full video link that starts with https://.' }
+  const details = await linkDetails(link)
+  if (details.missing) return { error: `That ${linkProviders[link.provider].name} video could not be found. Check that it is public or unlisted.` }
+  if (details.private) return { error: `That ${linkProviders[link.provider].name} video is private or doesn't allow embedding.` }
+  const provider = details.provider || link.provider
+  return {
+    link: {
+      ...link,
+      provider,
+      providerName: linkProviders[provider].name,
+      videoUrl: details.videoUrl || link.videoUrl || null,
+      title: details.title,
+      author: details.author,
+      thumbnailUrl: details.thumbnailUrl || null,
+      durationSeconds: details.durationSeconds,
+    },
+  }
+}
+
+router.post('/videos/link/preview', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
+  const { link, error } = await resolveVideoLink(req.body.url)
+  if (error) return res.status(400).json({ error })
+  return res.json({
+    provider: link.provider,
+    providerName: link.providerName,
+    title: link.title,
+    author: link.author,
+    thumbnailUrl: link.thumbnailUrl,
+    durationSeconds: link.durationSeconds,
+    embedUrl: link.embedUrl,
+    videoUrl: link.videoUrl,
+    watchUrl: link.watchUrl,
+  })
 })
 
-router.post('/videos/youtube', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
-  const youtubeId = youtubeIdFrom(req.body.url)
-  if (!youtubeId) return res.status(400).json({ error: 'Paste a valid YouTube link.' })
+router.post('/videos/link', loadSession, requireCsrf, requireTwoFactor, async (req, res) => {
   const fields = videoFields(req.body)
   if (fields.error) return res.status(400).json({ error: fields.error })
+  const customThumbnail = typeof req.body.thumbnailUrl === 'string' && req.body.thumbnailUrl.trim() ? httpsUrlOrNull(req.body.thumbnailUrl.trim()) : null
+  if (typeof req.body.thumbnailUrl === 'string' && req.body.thumbnailUrl.trim() && !customThumbnail) {
+    return res.status(400).json({ error: 'The thumbnail link must start with https://.' })
+  }
+  const { link, error } = await resolveVideoLink(req.body.url)
+  if (error) return res.status(400).json({ error })
   const id = randomUUID()
   await db.run(`
     INSERT INTO videos (id, user_id, title, description, original_name, mime_type, duration_seconds, size_bytes, video_path, thumbnail_path,
-      source, youtube_id, thumbnail_url)
-    VALUES (?, ?, ?, ?, ?, 'video/youtube', 0, 0, '', '', 'youtube', ?, ?)
-  `, id, req.session.user_id, fields.title, fields.description, `https://www.youtube.com/watch?v=${youtubeId}`, youtubeId, `https://i.ytimg.com/vi/${youtubeId}/hqdefault.jpg`)
+      source, provider, youtube_id, embed_url, external_url, video_url, thumbnail_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', 'link', ?, ?, ?, ?, ?, ?)
+  `, id, req.session.user_id, fields.title, fields.description, link.watchUrl.slice(0, 240), `video/${link.provider}`, link.durationSeconds,
+  link.provider, link.provider === 'youtube' ? link.providerId : null, link.embedUrl, link.watchUrl, link.videoUrl, customThumbnail || link.thumbnailUrl)
   return res.status(201).json({ video: privateVideoPayload(await db.get('SELECT * FROM videos WHERE id = ?', id)) })
 })
 

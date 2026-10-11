@@ -137,11 +137,15 @@ async function addMissingColumns(table, definitions) {
 await addMissingColumns('videos', {
   description: "TEXT NOT NULL DEFAULT ''",
   is_public: 'INTEGER NOT NULL DEFAULT 1',
-  // 'file' = stored on this server's disk, 'cloudinary' = Cloudinary upload, 'youtube' = linked YouTube video.
+  // 'file' = stored on this server's disk, 'cloudinary' = Cloudinary upload, 'link' = a video hosted elsewhere ('youtube' = older YouTube links).
   source: "TEXT NOT NULL DEFAULT 'file'",
   video_url: 'TEXT',
   thumbnail_url: 'TEXT',
   youtube_id: 'TEXT',
+  // For source = 'link': which service (youtube, vimeo, dailymotion, loom, streamable, file, page) and how to play it.
+  provider: 'TEXT',
+  embed_url: 'TEXT',
+  external_url: 'TEXT',
   cloudinary_video_id: 'TEXT',
   cloudinary_thumbnail_id: 'TEXT',
 })
