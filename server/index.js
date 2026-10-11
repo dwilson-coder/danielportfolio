@@ -453,9 +453,10 @@ router.post('/auth/login', passwordRateLimit, async (req, res) => {
   }
   const user = database.prepare('SELECT * FROM users WHERE email = ?').get(email)
   if (user.status !== 'active') return res.status(401).json({ error: 'Email or password is incorrect.' })
-  const state = 'authenticated'
+  const twoFactorEnabled = user.email_2fa_enabled === 1
+  const state = twoFactorEnabled ? 'two_factor_pending' : (process.env.TWO_FACTOR_EMAIL ? 'setup_required' : 'authenticated')
   const csrfToken = issueSession(req, res, user.id, state)
-  return res.json({ state, email, csrfToken, twoFactorEnabled: user.email_2fa_enabled === 1, role: user.role })
+  return res.json({ state, email, csrfToken, twoFactorEnabled, role: user.role })
 })
 
 router.post('/auth/email-code/send', authRateLimit, loadSession, requireCsrf, async (req, res) => {

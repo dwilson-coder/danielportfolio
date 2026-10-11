@@ -3,7 +3,7 @@ services:
     name: danielportfolio-api
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npm run build
     startCommand: npm start
     envVars:
       - key: NODE_ENV
@@ -14,7 +14,35 @@ services:
         value: "1"
       - key: SEED_DEMO_OWNER
         value: "true"
+      - key: PORTAL_DEMO_EMAIL
+        value: dwilsonstudios215@gmail.com
+      - key: PORTAL_DEMO_PASSWORD
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
       - key: PORTAL_RECOVERY_CODE
         generateValue: true
+      - key: VITE_CREATOR_NAME
+        value: Daniel Wilson
+      - key: VITE_CREATOR_LOCATION
+        value: "Pittsburgh, PA"
+      - key: VITE_CONTACT_EMAIL
+        value: basherdan21@gmail.com
+      - key: VITE_SOCIAL_YOUTUBE_URL
+        value: https://www.youtube.com/
+      - key: VITE_SOCIAL_GITHUB_URL
+        value: https://github.com/dwilson-coder/danielportfolio
+      - key: VITE_SOCIAL_LINKEDIN_URL
+        value: https://www.linkedin.com/
+      - key: TWO_FACTOR_EMAIL
+        value: damionwilson215@gmail.com
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        value: damionwilson215@gmail.com
+      - key: SMTP_PASSWORD
+        sync: false
