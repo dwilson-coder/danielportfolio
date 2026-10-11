@@ -29,6 +29,8 @@ const acceptedVideoMimes = new Set(['video/mp4', 'application/mp4', 'video/x-m4v
 const acceptedThumbnailMimes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const acceptedProfileMimes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const defaultCreatorName = process.env.VITE_CREATOR_NAME || 'Daniel Wilson'
+// Email two-factor sign-in is off unless TWO_FACTOR_REQUIRED=true and TWO_FACTOR_EMAIL is set.
+const twoFactorRequired = process.env.TWO_FACTOR_REQUIRED === 'true' && Boolean(process.env.TWO_FACTOR_EMAIL)
 
 for (const directory of [tempDirectory, videoDirectory, thumbnailDirectory, profileImageDirectory]) {
   mkdirSync(directory, { recursive: true })
@@ -454,7 +456,7 @@ router.post('/auth/login', passwordRateLimit, async (req, res) => {
   const user = database.prepare('SELECT * FROM users WHERE email = ?').get(email)
   if (user.status !== 'active') return res.status(401).json({ error: 'Email or password is incorrect.' })
   const twoFactorEnabled = user.email_2fa_enabled === 1
-  const state = twoFactorEnabled ? 'two_factor_pending' : (process.env.TWO_FACTOR_EMAIL ? 'setup_required' : 'authenticated')
+  const state = !twoFactorRequired ? 'authenticated' : (twoFactorEnabled ? 'two_factor_pending' : 'setup_required')
   const csrfToken = issueSession(req, res, user.id, state)
   return res.json({ state, email, csrfToken, twoFactorEnabled, role: user.role })
 })
@@ -733,6 +735,9 @@ async function seedDevelopmentDemoOwner() {
     .run(Number(result.lastInsertRowid), defaultCreatorName, process.env.VITE_CREATOR_LOCATION || 'Pittsburgh, PA', process.env.VITE_CREATOR_BIO || 'Independent filmmaker and motion designer, drawn to small details and big feelings.', JSON.stringify(['Filmmaking', 'Motion design', 'Editing']))
   console.log(`Development demo account initialized: ${email}. Authenticator setup is required on first sign-in.`)
 }
+
+// With 2FA off, drop sessions stuck waiting for an email code so those browsers return to the sign-in form.
+if (!twoFactorRequired) database.prepare("DELETE FROM sessions WHERE state != 'authenticated'").run()
 
 await seedDevelopmentDemoOwner()
 await restoreProfileBackup()

@@ -57,7 +57,7 @@ The first user (and any user made with `npm run create-user`) is an administrato
 - Passwords use Node scrypt with per-user salts. Email 2FA codes are HMAC-hashed at rest, expire after 10 minutes, and allow at most five attempts.
 - Sessions use random database-backed tokens in `HttpOnly`, `SameSite=Strict` cookies. Mutating requests require CSRF tokens; login, recovery, and uploads are rate-limited.
 - Video and thumbnail files are inspected by file signature, not just filename or browser MIME type. Profile images are limited to JPEG, PNG, and WebP, up to 5 MB.
-- Production requires a 32-character-or-longer `SESSION_SECRET` and `PORTAL_RECOVERY_CODE`, plus `TWO_FACTOR_EMAIL` and working `SMTP_HOST`, `SMTP_USER`, and `SMTP_PASSWORD` settings. Serve the app behind HTTPS; production session cookies use `Secure`. Explicit demo passwords are refused when `NODE_ENV=production`.
+- Production requires a 32-character-or-longer `SESSION_SECRET` and `PORTAL_RECOVERY_CODE`. Email two-factor sign-in is currently off; to turn it on, set `TWO_FACTOR_REQUIRED=true` plus `TWO_FACTOR_EMAIL` and working `SMTP_HOST`, `SMTP_USER`, and `SMTP_PASSWORD` settings. Serve the app behind HTTPS; production session cookies use `Secure`. Explicit demo passwords are refused when `NODE_ENV=production`.
 - SQLite and media are stored in `server/data/` and `server/uploads/`, both ignored by git. Back up both locations. The SQLite driver is Node's built-in `node:sqlite` module and currently emits an experimental-feature warning.
 
 ## Production

@@ -156,6 +156,7 @@ async function main() {
     // 3. Admin Login
     let cookie = ''
     let csrfToken = ''
+    let loginState = ''
     await step('POST /auth/login (Admin Sign In)', async () => {
       const res = await fetch(`${baseUrl}/auth/login`, {
         method: 'POST',
@@ -166,9 +167,12 @@ async function main() {
       cookie = res.headers.get('set-cookie') || ''
       const body = await res.json()
       csrfToken = body.csrfToken
+      loginState = body.state
       if (!cookie || !csrfToken) throw new Error('Missing session cookie or CSRF token')
     })
 
+    // Steps 4-5 only run when email 2FA is turned on (TWO_FACTOR_REQUIRED=true).
+    if (loginState !== 'authenticated') {
     // 4. Send 2FA
     await step('POST /auth/email-code/send (Send 2FA OTP)', async () => {
       const res = await fetch(`${baseUrl}/auth/email-code/send`, {
@@ -218,6 +222,7 @@ async function main() {
       if (body.state !== 'authenticated') throw new Error(`Expected authenticated state, got ${body.state}`)
       csrfToken = body.csrfToken
     })
+    }
 
     // 6. Get Session
     await step('GET /auth/session (Get Session State)', async () => {

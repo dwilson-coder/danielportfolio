@@ -34,6 +34,8 @@ services:
         value: https://github.com/dwilson-coder/danielportfolio
       - key: VITE_SOCIAL_LINKEDIN_URL
         value: https://www.linkedin.com/
+      - key: TWO_FACTOR_REQUIRED
+        value: "false"
       - key: TWO_FACTOR_EMAIL
         value: damionwilson215@gmail.com
       - key: SMTP_HOST
